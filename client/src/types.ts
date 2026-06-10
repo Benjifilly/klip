@@ -25,6 +25,18 @@ export interface PendingRotation {
   deviceName: string;
 }
 
+/** A device participating in the session (from encrypted presence packets). */
+export interface DeviceInfo {
+  /** Opaque per-install id — never shown, used as the React key. */
+  id: string;
+  name: string;
+  /** Last time we heard from it (ms epoch). Always "now" for self. */
+  lastSeen: number;
+  online: boolean;
+  /** True for the device this app instance runs on. */
+  self: boolean;
+}
+
 export interface KlipState {
   status: SyncStatus;
   peerCount: number;
@@ -47,8 +59,8 @@ export interface KlipState {
   /** False when the OS keychain is unavailable and files sit unencrypted on disk. */
   atRestEncrypted: boolean;
   pendingRotation: PendingRotation | null;
-  /** Names of the other devices currently seen in the session. */
-  devices: string[];
+  /** Devices in the session — self first, then peers sorted by name. */
+  devices: DeviceInfo[];
   history: ClipItem[];
 }
 

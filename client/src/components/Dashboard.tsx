@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   Clipboard,
   Copy,
   FileText,
   Image as ImageIcon,
+  MonitorSmartphone,
   Paperclip,
   Pin,
   Search,
@@ -48,18 +50,24 @@ interface ItemProps {
 /* Hover-revealed actions also surface on keyboard focus (group-focus-within). */
 const reveal = 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100';
 
-/** Past this, a text clip is collapsed behind a "Show more" toggle. */
-const LONG_TEXT_CHARS = 170; // ~3 lines at the window's minimum width
-const LONG_TEXT_LINES = 4;
-
 function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
   const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const textRef = useRef<HTMLSpanElement>(null);
   const received = item.direction === 'received';
   const link = item.type === 'text' && isUrl(item.text ?? '');
-  const text = item.text ?? '';
-  const longText =
-    item.type === 'text' &&
-    (text.length > LONG_TEXT_CHARS || text.split('\n').length > LONG_TEXT_LINES);
+
+  // Measure whether line-clamp actually truncates (and re-measure on resize),
+  // so "Show more" only appears when there is really more to show.
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el || item.type !== 'text') return;
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [item.text, item.type, expanded]);
 
   return (
     <li
@@ -88,23 +96,39 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
             <span className="truncate text-sm font-medium text-zinc-200">{item.name}</span>
           </span>
         ) : (
+          /*
+           * Collapsed: ~3.5 lines, the partial 4th fading to transparent via
+           * mask-image (works on any background — nothing is painted on top).
+           * Expanding animates max-height; past ~290px it scrolls internally.
+           */
           <span
-            className={`block break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200 ${
-              expanded ? 'max-h-72 overflow-y-auto' : 'line-clamp-3'
+            ref={textRef}
+            className={`block break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200 transition-[max-height] duration-300 ease-out ${
+              expanded ? 'overflow-y-auto pr-1' : 'overflow-hidden'
+            } ${
+              !expanded && clamped
+                ? '[mask-image:linear-gradient(to_bottom,black_58%,transparent_97%)]'
+                : ''
             }`}
+            style={{ maxHeight: expanded ? '18rem' : '5.6em' }}
           >
             {item.text}
           </span>
         )}
       </button>
-      {longText && (
+      {(clamped || expanded) && item.type === 'text' && (
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
           aria-expanded={expanded}
-          className="mt-1.5 text-[11px] font-medium text-klip-400 transition-colors hover:text-klip-300"
+          className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-klip-400 transition-colors hover:text-klip-300"
         >
           {expanded ? 'Show less' : 'Show more'}
+          <ChevronDown
+            size={11}
+            aria-hidden
+            className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+          />
         </button>
       )}
       <div className="mt-2.5 flex items-center justify-between gap-2">
@@ -193,6 +217,76 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
   );
 }
 
+/**
+ * Devices panel: who is in the session (from encrypted presence packets),
+ * with freshness, plus the only management actions a shared-key E2EE design
+ * allows — renaming this device and rotating the code to shake off intruders.
+ */
+function DevicesModal({ state, onClose }: { state: KlipState; onClose: () => void }) {
+  const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Devices in this session"
+        className="animate-rise flex w-80 flex-col gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 shadow-2xl shadow-black/60"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h3 className="font-display flex items-center gap-2 text-sm font-semibold text-zinc-200">
+          <MonitorSmartphone size={15} aria-hidden className="text-klip-400" />
+          Devices in this session
+        </h3>
+
+        <ul className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+          {state.devices.map((device) => (
+            <li
+              key={device.id}
+              className="flex items-center gap-2.5 rounded-xl border border-zinc-800/80 bg-zinc-950/60 px-3 py-2"
+            >
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${device.online ? 'bg-emerald-400' : 'bg-zinc-600'}`}
+                title={device.online ? 'Online' : 'Offline'}
+                aria-hidden
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-zinc-200">{device.name}</span>
+                <span className="block text-[10px] text-zinc-500">
+                  {device.self
+                    ? 'This device — rename it in Settings'
+                    : device.online
+                      ? 'Online'
+                      : `Last seen ${timeAgo(device.lastSeen)}`}
+                </span>
+              </span>
+              {device.self && (
+                <span className="shrink-0 rounded-md bg-klip-500/15 px-1.5 py-0.5 text-[10px] font-medium text-klip-300">
+                  you
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        <p className="text-[11px] leading-relaxed text-zinc-500">
+          Devices announce themselves through encrypted packets — the relay can't see this list. If a
+          device you don't recognize shows up, <strong className="font-medium text-zinc-400">rotate the
+          code</strong> and create a fresh session out-of-band if it follows.
+        </p>
+
+        <button
+          onClick={onClose}
+          className="self-end rounded-lg bg-zinc-800 px-4 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-700"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function QrModal({ state, onClose }: { state: KlipState; onClose: () => void }) {
   const [src, setSrc] = useState('');
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
@@ -235,6 +329,7 @@ export default function Dashboard({ state }: { state: KlipState }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [showQr, setShowQr] = useState(false);
+  const [showDevices, setShowDevices] = useState(false);
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [dropping, setDropping] = useState(false);
   const [fileError, setFileError] = useState('');
@@ -413,10 +508,14 @@ export default function Dashboard({ state }: { state: KlipState }) {
             </span>
           )}
         </div>
-        {state.devices.length > 0 && (
-          <p className="mt-1.5 truncate text-xs text-zinc-400" title={state.devices.join(', ')}>
-            Connected with: {state.devices.join(', ')}
-          </p>
+        {state.devices.length > 1 && (
+          <button
+            onClick={() => setShowDevices(true)}
+            className="mt-1.5 block max-w-full truncate text-left text-xs text-zinc-400 transition-colors hover:text-zinc-200"
+            title="Manage the devices in this session"
+          >
+            Connected with: {state.devices.filter((device) => !device.self).map((device) => device.name).join(', ')}
+          </button>
         )}
         <div className="mt-2.5 flex items-center gap-2 border-t border-zinc-800/60 pt-2.5">
           <button
@@ -424,6 +523,13 @@ export default function Dashboard({ state }: { state: KlipState }) {
             className="rounded-lg bg-zinc-800/80 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:bg-zinc-700"
           >
             QR code
+          </button>
+          <button
+            onClick={() => setShowDevices(true)}
+            className="rounded-lg bg-zinc-800/80 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:bg-zinc-700"
+            title="Devices in this session"
+          >
+            Devices
           </button>
           <button
             onClick={rotate}
@@ -570,6 +676,7 @@ export default function Dashboard({ state }: { state: KlipState }) {
       </section>
 
       {showQr && <QrModal state={state} onClose={() => setShowQr(false)} />}
+      {showDevices && <DevicesModal state={state} onClose={() => setShowDevices(false)} />}
     </div>
   );
 }

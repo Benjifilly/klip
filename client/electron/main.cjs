@@ -34,7 +34,7 @@ const {
   generateSessionCode,
   formatSessionCode,
 } = require('./crypto.cjs');
-const { sanitizeFileName, isAllowedRelayUrl } = require('./util.cjs');
+const { sanitizeFileName, isAllowedRelayUrl, PASTE_HELPER_SCRIPT } = require('./util.cjs');
 
 const POLL_INTERVAL_MS = 700;
 const MAX_TEXT_BYTES = 64 * 1024;
@@ -176,7 +176,27 @@ function deleteEntryArtifacts(entry) {
 // --- State --------------------------------------------------------------------
 
 function devicesList() {
-  return [...peers.values()].map((peer) => peer.name).sort();
+  const now = Date.now();
+  const others = [...peers.entries()]
+    .map(([id, peer]) => ({
+      id,
+      name: peer.name,
+      lastSeen: peer.ts,
+      // "Online" = heard from it within one announce period (plus margin).
+      online: now - peer.ts < PRESENCE_INTERVAL_MS + 30_000,
+      self: false,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return [
+    {
+      id: settings.installId,
+      name: settings.deviceName,
+      lastSeen: now,
+      online: status === 'connected' && !paused,
+      self: true,
+    },
+    ...others,
+  ];
 }
 
 function getState() {
@@ -432,6 +452,12 @@ async function applyIncoming(item) {
   if (item.kind === 'presence') {
     const id = String(item.id ?? '').slice(0, 64);
     if (!id || id === settings.installId) return;
+    if (item.bye) {
+      // Graceful goodbye — drop the device immediately instead of waiting
+      // for its presence entry to expire.
+      if (peers.delete(id)) broadcastState();
+      return;
+    }
     const previous = peers.get(id);
     peers.set(id, { name: deviceName, ts: Date.now() });
     // A newcomer says hello; answer so it learns we exist too.
@@ -487,14 +513,16 @@ async function applyIncoming(item) {
  * Encrypted presence announcements: each device periodically broadcasts its
  * name so the UI can show *which* devices are connected, not just how many.
  * The relay only ever sees ciphertext, like every other packet.
+ * `bye` is a graceful goodbye sent when leaving a session.
  */
-async function announcePresence(hello) {
+async function announcePresence(hello, bye = false) {
   if (!sessionKey) return;
   await sendEncrypted({
     kind: 'presence',
     id: settings.installId,
     name: settings.deviceName,
     hello: Boolean(hello),
+    bye: Boolean(bye),
     ts: Date.now(),
   });
 }
@@ -580,52 +608,106 @@ function readClipboardFilePaths() {
   try {
     buf = clipboard.readBuffer('CF_HDROP');
   } catch {
-    return [];
+    buf = null;
   }
-  if (!buf || buf.length < 20) return [];
-  const pFiles = buf.readUInt32LE(0);
-  // ANSI path lists (fWide=0) don't occur on modern Windows.
-  if (buf.readUInt32LE(16) === 0 || pFiles >= buf.length) return [];
-  const paths = [];
-  let off = pFiles;
-  while (off + 1 < buf.length) {
-    let end = off;
-    while (end + 1 < buf.length && buf.readUInt16LE(end) !== 0) end += 2;
-    if (end === off) break; // double null — end of the list
-    paths.push(buf.toString('utf16le', off, end));
-    off = end + 2;
+  if (buf && buf.length >= 20) {
+    const pFiles = buf.readUInt32LE(0);
+    // ANSI path lists (fWide=0) don't occur on modern Windows.
+    if (buf.readUInt32LE(16) !== 0 && pFiles < buf.length) {
+      const paths = [];
+      let off = pFiles;
+      while (off + 1 < buf.length) {
+        let end = off;
+        while (end + 1 < buf.length && buf.readUInt16LE(end) !== 0) end += 2;
+        if (end === off) break; // double null — end of the list
+        paths.push(buf.toString('utf16le', off, end));
+        off = end + 2;
+      }
+      if (paths.length) return paths;
+    }
   }
-  return paths;
+  // Some apps (browsers included) publish a single path as FileNameW instead.
+  try {
+    const single = clipboard.readBuffer('FileNameW');
+    if (single && single.length >= 4) {
+      let end = 0;
+      while (end + 1 < single.length && single.readUInt16LE(end) !== 0) end += 2;
+      const p = single.toString('utf16le', 0, end);
+      if (p && /^[a-zA-Z]:[\\/]|^\\\\/.test(p)) return [p];
+    }
+  } catch { /* format absent */ }
+  return [];
 }
 
 // --- Paste injection ---------------------------------------------------------
 
 let pasteHelper = null;
+let helperStdoutBuffer = '';
+let pendingForegroundResolve = null;
+/** Window that had focus right before the palette opened (decimal HWND). */
+let lastForegroundHwnd = '0';
 
 /**
- * Persistent helper that synthesizes Ctrl+V in whatever window has focus.
+ * Persistent helper for focus + paste (script in util.cjs). Hiding a
+ * frameless always-on-top window does NOT reliably hand focus back to the
+ * previous app on Windows, so we capture the foreground HWND *before* the
+ * palette opens (`get`) and have the helper explicitly re-activate it before
+ * pasting (`paste <hwnd>`) or on dismiss (`focus <hwnd>`).
  * Spawned once and kept alive so a paste from the palette is instant — no
  * PowerShell cold start on the hot path.
  */
 function ensurePasteHelper() {
   if (process.platform !== 'win32') return null;
   if (pasteHelper && pasteHelper.exitCode === null) return pasteHelper;
+  helperStdoutBuffer = '';
   pasteHelper = spawn('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command',
-    "Add-Type -AssemblyName System.Windows.Forms; while ($null -ne ($line = [Console]::In.ReadLine())) { [System.Windows.Forms.SendKeys]::SendWait('^v') }",
-  ], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    '-NoProfile', '-NonInteractive', '-Command', PASTE_HELPER_SCRIPT,
+  ], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  pasteHelper.stdout.on('data', (chunk) => {
+    helperStdoutBuffer += chunk.toString('utf8');
+    let nl;
+    while ((nl = helperStdoutBuffer.indexOf('\n')) !== -1) {
+      const line = helperStdoutBuffer.slice(0, nl).trim();
+      helperStdoutBuffer = helperStdoutBuffer.slice(nl + 1);
+      if (pendingForegroundResolve) {
+        pendingForegroundResolve(line);
+        pendingForegroundResolve = null;
+      }
+    }
+  });
   pasteHelper.on('error', () => { pasteHelper = null; });
   return pasteHelper;
 }
 
-function sendCtrlV() {
+function helperWrite(command) {
   const helper = ensurePasteHelper();
-  if (!helper) return;
+  if (!helper) return false;
   try {
-    helper.stdin.write('paste\n');
+    helper.stdin.write(`${command}\n`);
+    return true;
   } catch {
     pasteHelper = null; // helper died — the next call respawns it
+    return false;
   }
+}
+
+/** Ask the helper which window is foreground right now ('0' if unknown). */
+function captureForegroundWindow() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingForegroundResolve = null;
+      resolve('0');
+    }, 250);
+    pendingForegroundResolve = (line) => {
+      clearTimeout(timer);
+      resolve(/^\d+$/.test(line) ? line : '0');
+    };
+    if (!helperWrite('get')) {
+      clearTimeout(timer);
+      pendingForegroundResolve = null;
+      resolve('0');
+    }
+  });
 }
 
 /**
@@ -690,7 +772,27 @@ function startClipboardWatcher() {
     // it never syncs, not even after the next poll, and capture nothing.
     const sensitive = clipboardMarkedSensitive();
 
-    // Text first: apps like Excel expose cells as both text and image, and
+    // Files first: Explorer AND browsers put a file list on the clipboard
+    // alongside a text fallback (a path or URL) — when a file list exists,
+    // the file is what the user copied, so the text must not win.
+    const files = readClipboardFilePaths();
+    if (files.length) {
+      const sig = files.join('\n');
+      if (sig === lastFilesSig) return;
+      lastFilesSig = sig;
+      // Swallow the text/image fallbacks of this same copy so the next poll
+      // doesn't sync them as separate clips.
+      lastClipboardText = clipboard.readText();
+      const fallbackImage = clipboard.readImage();
+      lastImageHash = fallbackImage.isEmpty() ? '' : sha1(fallbackImage.toPNG());
+      if (sensitive || !settings.syncFiles) return;
+      for (const file of files.slice(0, MAX_CLIPBOARD_FILES)) {
+        sendFileFromPath(file).catch(() => { /* folder or oversized — skip */ });
+      }
+      return;
+    }
+
+    // Then text: apps like Excel expose cells as both text and image, and
     // the text representation is what users expect to sync.
     const text = clipboard.readText();
     if (text) {
@@ -699,19 +801,6 @@ function startClipboardWatcher() {
       if (sensitive || !settings.syncText) return;
       if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) return;
       onLocalCopy(text).catch(() => {});
-      return;
-    }
-
-    // Files copied in Explorer — same path as drag-and-drop.
-    const files = readClipboardFilePaths();
-    if (files.length) {
-      const sig = files.join('\n');
-      if (sig === lastFilesSig) return;
-      lastFilesSig = sig;
-      if (sensitive || !settings.syncFiles) return;
-      for (const file of files.slice(0, MAX_CLIPBOARD_FILES)) {
-        sendFileFromPath(file).catch(() => { /* folder or oversized — skip */ });
-      }
       return;
     }
 
@@ -769,7 +858,10 @@ async function joinSession(rawCode) {
   connect();
 }
 
-function leaveSession() {
+async function leaveSession() {
+  // Best-effort goodbye so the other devices drop us from their list now
+  // instead of when our presence entry expires.
+  try { await announcePresence(false, true); } catch { /* socket already down */ }
   disconnect();
   sessionKey = null;
   roomId = null;
@@ -882,12 +974,15 @@ function createPaletteWindow() {
   });
 }
 
-function togglePalette() {
+async function togglePalette() {
   if (!paletteWin || paletteWin.isDestroyed()) createPaletteWindow();
   if (paletteWin.isVisible()) {
     paletteWin.hide();
     return;
   }
+  // Capture who has focus NOW — once the palette shows it's too late, and
+  // Windows won't reliably give focus back when a frameless window hides.
+  lastForegroundHwnd = await captureForegroundWindow();
   const cursor = screen.getCursorScreenPoint();
   const area = screen.getDisplayNearestPoint(cursor).workArea;
   const x = Math.round(Math.min(Math.max(cursor.x - PALETTE_SIZE.width / 2, area.x), area.x + area.width - PALETTE_SIZE.width));
@@ -984,15 +1079,16 @@ function copyEntry(id) {
 }
 
 /**
- * Palette flow: copy the entry, hide the palette so focus returns to the app
- * the user was typing in, then synthesize Ctrl+V there.
+ * Palette flow: copy the entry, hide the palette, then have the helper
+ * re-activate the window that was focused before the palette opened and
+ * synthesize Ctrl+V there — we never rely on Windows restoring focus itself.
  */
 function pasteEntry(id) {
   const result = copyEntry(id);
   if (!result.ok) return result;
   if (paletteWin && !paletteWin.isDestroyed()) paletteWin.hide();
-  // Give Windows a beat to hand focus back to the previous window.
-  setTimeout(sendCtrlV, 140);
+  // A short beat for the hide to land, then the helper does focus + Ctrl+V.
+  setTimeout(() => helperWrite(`paste ${lastForegroundHwnd}`), 80);
   return { ok: true };
 }
 
@@ -1100,8 +1196,8 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('klip:leave-session', () => {
-    leaveSession();
+  ipcMain.handle('klip:leave-session', async () => {
+    await leaveSession();
     return { ok: true };
   });
 
@@ -1308,7 +1404,11 @@ function registerIpc() {
   });
 
   ipcMain.handle('klip:palette-hide', () => {
-    if (paletteWin && !paletteWin.isDestroyed()) paletteWin.hide();
+    if (paletteWin && !paletteWin.isDestroyed() && paletteWin.isVisible()) {
+      paletteWin.hide();
+      // Esc / copy-only: hand focus back to the app the user came from.
+      setTimeout(() => helperWrite(`focus ${lastForegroundHwnd}`), 60);
+    }
     return { ok: true };
   });
 
