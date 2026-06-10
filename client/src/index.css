@@ -1,0 +1,96 @@
+@import "@fontsource-variable/space-grotesk";
+@import "tailwindcss";
+
+/*
+ * Klip visual identity
+ * --------------------
+ * Display face : Space Grotesk (bundled locally — no network at runtime)
+ * Accent       : indigo → violet gradient ("klip gradient")
+ * Surfaces     : zinc-950 base, zinc-900 cards, 1px zinc-800 borders
+ * Signature    : soft top glow, rounded-xl/2xl radii, kbd-styled hints
+ */
+
+@theme {
+  --font-display: "Space Grotesk Variable", "Segoe UI", system-ui, sans-serif;
+  --color-klip-300: #c7d2fe;
+  --color-klip-400: #818cf8;
+  --color-klip-500: #6366f1;
+  --color-klip-600: #4f46e5;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+/* The brand gradient, for primary surfaces (buttons, logo tiles). */
+.brand-gradient {
+  background-image: linear-gradient(135deg, #6366f1, #a855f7);
+}
+
+/* The Klip wordmark: display face + soft gradient ink. */
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  background-image: linear-gradient(120deg, #c7d2fe, #ddd6fe 55%, #f0abfc);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Custom titlebar: the whole strip drags the window, controls opt out. */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+::selection {
+  background: #6366f1;
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+kbd {
+  border: 1px solid #27272a;
+  border-bottom-width: 2px;
+  background: #18181b;
+  border-radius: 5px;
+  padding: 0 5px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  color: #a1a1aa;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise 0.25s ease-out both;
+}

@@ -1,0 +1,22 @@
+{
+  "name": "klip",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Instant, end-to-end encrypted clipboard sync between your devices.",
+  "license": "MIT",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -s first \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev --workspace server",
+    "dev:client": "npm run dev --workspace client",
+    "build:client": "npm run build --workspace client",
+    "dist:client": "npm run dist --workspace client",
+    "test": "node tests/e2e.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

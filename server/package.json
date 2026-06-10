@@ -1,0 +1,17 @@
+{
+  "name": "@klip/relay",
+  "version": "0.1.0",
+  "description": "Klip relay server — routes end-to-end encrypted clipboard packets between devices in the same session. Never sees plaintext.",
+  "license": "MIT",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
