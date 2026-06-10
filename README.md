@@ -1,5 +1,10 @@
 # Klip
 
+[![CI](https://github.com/Benjifilly/klip/actions/workflows/ci.yml/badge.svg)](https://github.com/Benjifilly/klip/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](LICENSE)
+[![Electron](https://img.shields.io/badge/Electron-36-9feaf9.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![E2EE](https://img.shields.io/badge/E2EE-AES--256--GCM%20%2B%20Argon2id-a855f7.svg)](#security-model)
+
 **Instant, end-to-end encrypted clipboard sync between your devices — anywhere in the world.**
 
 Copy on your desktop, paste on your laptop. Klip watches your clipboard, encrypts everything locally with AES-256-GCM, and relays the ciphertext in real time over WebSockets to every device in your session. The relay server never sees your data — only opaque encrypted packets.
@@ -70,7 +75,7 @@ klip/
 Requires **Node.js ≥ 20**.
 
 ```bash
-git clone https://github.com/<you>/klip.git
+git clone https://github.com/Benjifilly/klip.git
 cd klip
 npm install        # installs server + client (npm workspaces)
 npm test           # e2e: crypto round-trip, GCM auth, room isolation
@@ -105,7 +110,9 @@ To verify E2EE empirically: watch the relay traffic (e.g. Wireshark on `:8787`) 
 
 In the palette: type to filter, `↑`/`↓` to navigate, `Enter` **pastes directly** into the app you came from (`Ctrl+Enter` copies without pasting), `Esc` dismisses.
 
-**Files:** drop a file on the window (or click the 📎 button) to send it to your devices. Received files stay encrypted in Klip's store until you click **Save** — they are never auto-written to disk, never executed. Limits: 20 MB per file, names sanitized on arrival.
+**Files:** copy a file in Explorer (`Ctrl+C`), drop it on the window, or click the 📎 button — it's sent to your devices. Received files stay encrypted in Klip's store until you click **Save** — they are never auto-written to disk, never executed. Limits: 20 MB per file, 3 files per copy, names sanitized on arrival.
+
+**History:** click any item to copy it back to the clipboard (files open the Save dialog instead); hover for Open / Save / Pin / Delete.
 
 Closing the window doesn't quit: Klip keeps syncing from the **system tray** (the `^` overflow area next to the clock). The tray menu shows the sync status, your five most recent clips for one-click re-copy, the quick-paste palette, and a **Pause sync** toggle. Pin a clip (📌 on hover) and it survives **Clear all** and history pruning.
 
