@@ -1,0 +1,12 @@
+# Render blueprint for the Klip relay — "New +" → "Blueprint" → point at this repo.
+# Render terminates TLS for you: point the app at wss://<service-name>.onrender.com
+
+services:
+  - type: web
+    name: klip-relay
+    runtime: docker
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true

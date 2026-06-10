@@ -1,0 +1,27 @@
+# Fly.io deployment for the Klip relay.
+#   fly launch --copy-config --no-deploy   (from the server/ directory)
+#   fly deploy
+# Fly terminates TLS for you: point the app at wss://<app-name>.fly.dev
+
+app = "klip-relay"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  method = "GET"
+  path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
