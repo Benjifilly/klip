@@ -46,6 +46,8 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const CHUNK_BYTES = 256 * 1024;
 const CHUNK_TRANSFER_TTL_MS = 120_000;
 const PALETTE_SIZE = { width: 380, height: 380 };
+// Ctrl+C on a multi-selection in Explorer: send at most this many files.
+const MAX_CLIPBOARD_FILES = 3;
 
 let win = null;
 let paletteWin = null;
@@ -63,6 +65,7 @@ let peerCount = 0;
 let paused = false;
 let lastClipboardText = '';
 let lastImageHash = '';
+let lastFilesSig = '';
 let history = [];
 let quitting = false;
 let trayBalloonShown = false;
@@ -410,6 +413,35 @@ async function sendEncrypted(payload) {
 
 const sha1 = (buf) => createHash('sha1').update(buf).digest('hex');
 
+/**
+ * Files copied in Explorer (Ctrl+C) land on the clipboard as CF_HDROP:
+ * a 20-byte DROPFILES header (path-list offset at byte 0, Unicode flag at
+ * byte 16) followed by a double-null-terminated UTF-16LE list of paths.
+ */
+function readClipboardFilePaths() {
+  if (process.platform !== 'win32') return [];
+  let buf;
+  try {
+    buf = clipboard.readBuffer('CF_HDROP');
+  } catch {
+    return [];
+  }
+  if (!buf || buf.length < 20) return [];
+  const pFiles = buf.readUInt32LE(0);
+  // ANSI path lists (fWide=0) don't occur on modern Windows.
+  if (buf.readUInt32LE(16) === 0 || pFiles >= buf.length) return [];
+  const paths = [];
+  let off = pFiles;
+  while (off + 1 < buf.length) {
+    let end = off;
+    while (end + 1 < buf.length && buf.readUInt16LE(end) !== 0) end += 2;
+    if (end === off) break; // double null — end of the list
+    paths.push(buf.toString('utf16le', off, end));
+    off = end + 2;
+  }
+  return paths;
+}
+
 // --- Paste injection ---------------------------------------------------------
 
 let pasteHelper = null;
@@ -494,6 +526,7 @@ async function onLocalImageCopy(png, image) {
 
 function startClipboardWatcher() {
   lastClipboardText = clipboard.readText();
+  lastFilesSig = readClipboardFilePaths().join('\n');
   setInterval(() => {
     if (paused) return;
 
@@ -505,6 +538,18 @@ function startClipboardWatcher() {
       lastClipboardText = text;
       if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) return;
       onLocalCopy(text).catch(() => {});
+      return;
+    }
+
+    // Files copied in Explorer — same path as drag-and-drop.
+    const files = readClipboardFilePaths();
+    if (files.length) {
+      const sig = files.join('\n');
+      if (sig === lastFilesSig) return;
+      lastFilesSig = sig;
+      for (const file of files.slice(0, MAX_CLIPBOARD_FILES)) {
+        sendFileFromPath(file).catch(() => { /* folder or oversized — skip */ });
+      }
       return;
     }
 
@@ -534,6 +579,7 @@ function setPaused(value) {
   // Swallow whatever was copied while paused so resuming doesn't broadcast it.
   if (!paused) {
     lastClipboardText = clipboard.readText();
+    lastFilesSig = readClipboardFilePaths().join('\n');
     const image = clipboard.readImage();
     lastImageHash = image.isEmpty() ? '' : sha1(image.toPNG());
   }
@@ -679,9 +725,12 @@ function togglePalette() {
   const y = Math.round(Math.min(Math.max(cursor.y - 24, area.y), area.y + area.height - PALETTE_SIZE.height));
   paletteWin.setPosition(x, y);
   paletteWin.webContents.send('klip:state', getState());
-  paletteWin.webContents.send('klip:palette-open');
   paletteWin.show();
   paletteWin.focus();
+  // Frameless transparent windows don't reliably hand keyboard focus to the
+  // page on show — force it before asking the renderer to focus the input.
+  paletteWin.webContents.focus();
+  paletteWin.webContents.send('klip:palette-open');
 }
 
 function showWindow() {

@@ -25,7 +25,9 @@ export default function Palette() {
     const offOpen = window.klip.onPaletteOpen(() => {
       setQuery('');
       setSelected(0);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // rAF fires before Windows finishes handing focus to the window — the
+      // input would render without a caret. A short delay is reliable.
+      setTimeout(() => inputRef.current?.focus(), 60);
     });
     return () => {
       offState();

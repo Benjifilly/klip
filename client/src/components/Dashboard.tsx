@@ -83,25 +83,31 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
         item.pinned ? 'border-indigo-500/30 hover:border-indigo-500/50' : 'border-zinc-800/80 hover:border-zinc-700'
       }`}
     >
-      {item.type === 'image' ? (
-        <img
-          src={item.thumb}
-          alt="Clipboard image"
-          draggable={false}
-          className="max-h-20 rounded-lg border border-zinc-800"
-        />
-      ) : item.type === 'file' ? (
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-400">
-            <FileIcon />
-          </span>
-          <span className="truncate text-sm font-medium text-zinc-200">{item.name}</span>
-        </div>
-      ) : (
-        <p className="line-clamp-3 break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
-          {item.text}
-        </p>
-      )}
+      <div
+        onClick={() => onCopy(item)}
+        title={item.type === 'file' ? 'Click to save to disk' : 'Click to copy'}
+        className="cursor-pointer"
+      >
+        {item.type === 'image' ? (
+          <img
+            src={item.thumb}
+            alt="Clipboard image"
+            draggable={false}
+            className="max-h-20 rounded-lg border border-zinc-800"
+          />
+        ) : item.type === 'file' ? (
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-400">
+              <FileIcon />
+            </span>
+            <span className="truncate text-sm font-medium text-zinc-200">{item.name}</span>
+          </div>
+        ) : (
+          <p className="line-clamp-3 break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
+            {item.text}
+          </p>
+        )}
+      </div>
       <div className="mt-2.5 flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
           <span
