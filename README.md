@@ -149,6 +149,12 @@ location / {
 
 `GET /healthz` returns `{"ok":true,"rooms":N}` for liveness probes, and `GET /metrics` exposes Prometheus counters (rooms, connections, forwarded/replayed packets) — never payload content.
 
+To verify a deployed relay end-to-end (TLS, WebSocket upgrade, room join):
+
+```bash
+node tests/ws-probe.cjs wss://your-relay.example.com   # prints "joined" within a second
+```
+
 One-click deploys: `server/fly.toml` (Fly.io) and `render.yaml` (Render blueprint) are included; both give you `wss://` out of the box. CI runs `npm test` and the client build on every push (`.github/workflows/ci.yml`).
 
 ### Package the desktop app
