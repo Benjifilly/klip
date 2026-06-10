@@ -1,15 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  ArrowDown,
+  ArrowUp,
+  Clipboard,
+  Copy,
+  FileText,
+  Image as ImageIcon,
+  Paperclip,
+  Pin,
+  Search,
+  Trash2,
+} from 'lucide-react';
 import QRCode from 'qrcode';
 import type { ClipItem, KlipState } from '../types';
 import { statusMeta } from '../status';
+import { useDialogA11y } from '../useDialogA11y';
 
-type Filter = 'all' | 'links' | 'received' | 'sent';
+type Filter = 'all' | 'links' | 'images' | 'files' | 'received' | 'sent';
 
-const FILTERS: { id: Filter; label: string; title: string }[] = [
+const FILTERS: { id: Filter; label: ReactNode; title: string }[] = [
   { id: 'all', label: 'All', title: 'Everything' },
   { id: 'links', label: 'Links', title: 'Links only' },
-  { id: 'received', label: '↓', title: 'Received only' },
-  { id: 'sent', label: '↑', title: 'Sent only' },
+  { id: 'images', label: <ImageIcon size={12} aria-hidden />, title: 'Images only' },
+  { id: 'files', label: <FileText size={12} aria-hidden />, title: 'Files only' },
+  { id: 'received', label: <ArrowDown size={12} aria-hidden />, title: 'Received only' },
+  { id: 'sent', label: <ArrowUp size={12} aria-hidden />, title: 'Sent only' },
 ];
 
 function timeAgo(ts: number): string {
@@ -23,49 +38,6 @@ function timeAgo(ts: number): string {
 
 const isUrl = (text: string) => /^https?:\/\/\S+$/.test(text.trim());
 
-function SearchIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <path d="m21 21-4.35-4.35" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-    </svg>
-  );
-}
-
-function PaperclipIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-    </svg>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z" />
-      <path d="M14 2v6h6" />
-    </svg>
-  );
-}
-
-function PinIcon({ filled }: { filled: boolean }) {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 17v5" />
-      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
-    </svg>
-  );
-}
-
 interface ItemProps {
   item: ClipItem;
   index: number;
@@ -73,56 +45,83 @@ interface ItemProps {
   onCopy: (item: ClipItem) => void;
 }
 
+/* Hover-revealed actions also surface on keyboard focus (group-focus-within). */
+const reveal = 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100';
+
+/** Past this, a text clip is collapsed behind a "Show more" toggle. */
+const LONG_TEXT_CHARS = 170; // ~3 lines at the window's minimum width
+const LONG_TEXT_LINES = 4;
+
 function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
+  const [expanded, setExpanded] = useState(false);
   const received = item.direction === 'received';
   const link = item.type === 'text' && isUrl(item.text ?? '');
+  const text = item.text ?? '';
+  const longText =
+    item.type === 'text' &&
+    (text.length > LONG_TEXT_CHARS || text.split('\n').length > LONG_TEXT_LINES);
 
   return (
     <li
       className={`group animate-rise rounded-xl border bg-zinc-900/50 p-3.5 transition-colors hover:bg-zinc-900/80 ${
-        item.pinned ? 'border-indigo-500/30 hover:border-indigo-500/50' : 'border-zinc-800/80 hover:border-zinc-700'
+        item.pinned ? 'border-klip-500/30 hover:border-klip-500/50' : 'border-zinc-800/80 hover:border-zinc-700'
       }`}
     >
-      <div
+      <button
+        type="button"
         onClick={() => onCopy(item)}
         title={item.type === 'file' ? 'Click to save to disk' : 'Click to copy'}
-        className="cursor-pointer"
+        className="block w-full cursor-pointer rounded-md text-left"
       >
         {item.type === 'image' ? (
           <img
             src={item.thumb}
-            alt="Clipboard image"
+            alt={`Clipboard image from ${item.deviceName}`}
             draggable={false}
             className="max-h-20 rounded-lg border border-zinc-800"
           />
         ) : item.type === 'file' ? (
-          <div className="flex items-center gap-2.5">
+          <span className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-400">
-              <FileIcon />
+              <FileText size={16} aria-hidden />
             </span>
             <span className="truncate text-sm font-medium text-zinc-200">{item.name}</span>
-          </div>
+          </span>
         ) : (
-          <p className="line-clamp-3 break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">
-            {item.text}
-          </p>
-        )}
-      </div>
-      <div className="mt-2.5 flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
           <span
-            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${
-              received ? 'bg-indigo-500/15 text-indigo-300' : 'bg-zinc-800 text-zinc-500'
+            className={`block break-words whitespace-pre-wrap text-sm leading-relaxed text-zinc-200 ${
+              expanded ? 'max-h-72 overflow-y-auto' : 'line-clamp-3'
+            }`}
+          >
+            {item.text}
+          </span>
+        )}
+      </button>
+      {longText && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          className="mt-1.5 text-[11px] font-medium text-klip-400 transition-colors hover:text-klip-300"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+      <div className="mt-2.5 flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-400">
+          <span
+            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded ${
+              received ? 'bg-klip-500/15 text-klip-300' : 'bg-zinc-800 text-zinc-400'
             }`}
             title={received ? 'Received' : 'Sent'}
           >
-            {received ? '↓' : '↑'}
+            {received ? <ArrowDown size={10} aria-label="Received" /> : <ArrowUp size={10} aria-label="Sent" />}
           </span>
           <span className="truncate">
             {item.deviceName} · {timeAgo(item.ts)}
           </span>
           {link && (
-            <span className="shrink-0 rounded-md bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">
+            <span className="shrink-0 rounded-md bg-klip-500/15 px-1.5 py-0.5 text-[10px] font-medium text-klip-300">
               link
             </span>
           )}
@@ -137,12 +136,12 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
 
         <span className="flex shrink-0 items-center gap-1">
           {index < 9 && item.type !== 'file' && (
-            <kbd className="opacity-0 transition-opacity group-hover:opacity-100">Ctrl+{index + 1}</kbd>
+            <kbd className={`transition-opacity ${reveal}`}>Ctrl+{index + 1}</kbd>
           )}
           {link && (
             <button
               onClick={() => window.klip.openUrl((item.text ?? '').trim())}
-              className="rounded-lg bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300 opacity-0 transition-all hover:bg-zinc-700 group-hover:opacity-100"
+              className={`rounded-lg bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300 transition-all hover:bg-zinc-700 ${reveal}`}
               title="Open in browser"
             >
               Open
@@ -151,7 +150,7 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
           {item.type === 'file' ? (
             <button
               onClick={() => window.klip.saveFile(item.id)}
-              className="rounded-lg bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300 opacity-0 transition-all hover:bg-zinc-700 group-hover:opacity-100"
+              className={`rounded-lg bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300 transition-all hover:bg-zinc-700 ${reveal}`}
               title="Save to disk"
             >
               Save
@@ -162,7 +161,7 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
               className={`rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
                 copied
                   ? 'bg-emerald-500/15 text-emerald-300'
-                  : 'bg-zinc-800 text-zinc-300 opacity-0 hover:bg-zinc-700 group-hover:opacity-100'
+                  : `bg-zinc-800 text-zinc-300 hover:bg-zinc-700 ${reveal}`
               }`}
             >
               {copied ? 'Copied ✓' : 'Copy'}
@@ -172,21 +171,21 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
             onClick={() => window.klip.togglePin(item.id)}
             className={`rounded-lg p-1.5 transition-all ${
               item.pinned
-                ? 'bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25'
-                : 'bg-zinc-800 text-zinc-500 opacity-0 hover:bg-zinc-700 hover:text-zinc-300 group-hover:opacity-100'
+                ? 'bg-klip-500/15 text-klip-300 hover:bg-klip-500/25'
+                : `bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-300 ${reveal}`
             }`}
             title={item.pinned ? 'Unpin' : 'Pin — survives "Clear all"'}
             aria-label={item.pinned ? 'Unpin item' : 'Pin item'}
           >
-            <PinIcon filled={item.pinned} />
+            <Pin size={12} fill={item.pinned ? 'currentColor' : 'none'} aria-hidden />
           </button>
           <button
             onClick={() => window.klip.deleteItem(item.id)}
-            className="rounded-lg bg-zinc-800 p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-red-500/15 hover:text-red-400 group-hover:opacity-100"
+            className={`rounded-lg bg-zinc-800 p-1.5 text-zinc-400 transition-all hover:bg-red-500/15 hover:text-red-400 ${reveal}`}
             title="Delete"
             aria-label="Delete item"
           >
-            <TrashIcon />
+            <Trash2 size={12} aria-hidden />
           </button>
         </span>
       </div>
@@ -196,6 +195,7 @@ function HistoryItem({ item, index, copied, onCopy }: ItemProps) {
 
 function QrModal({ state, onClose }: { state: KlipState; onClose: () => void }) {
   const [src, setSrc] = useState('');
+  const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
 
   useEffect(() => {
     const uri = `klip://join?code=${encodeURIComponent(state.sessionCode)}&relay=${encodeURIComponent(state.serverUrl)}`;
@@ -205,13 +205,17 @@ function QrModal({ state, onClose }: { state: KlipState; onClose: () => void }) 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Session QR code"
         className="animate-rise flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-5 shadow-2xl shadow-black/60"
         onClick={(event) => event.stopPropagation()}
       >
         <h3 className="font-display text-sm font-semibold text-zinc-200">Scan to join this session</h3>
         {src && <img src={src} alt="Session QR code" className="rounded-xl" draggable={false} />}
-        <code className="font-mono text-xs tracking-wide text-indigo-300">{state.sessionCode}</code>
-        <p className="max-w-60 text-center text-[11px] leading-relaxed text-zinc-500">
+        <code className="font-mono text-xs tracking-wide text-klip-300">{state.sessionCode}</code>
+        <p className="max-w-60 text-center text-xs leading-relaxed text-zinc-400">
           Anyone scanning this joins your session — share it like a password.
         </p>
         <button
@@ -254,23 +258,24 @@ export default function Dashboard({ state }: { state: KlipState }) {
   function onDrop(event: React.DragEvent) {
     event.preventDefault();
     setDropping(false);
-    for (const file of Array.from(event.dataTransfer.files).slice(0, 5)) {
-      const filePath = window.klip.getPathForFile(file);
-      window.klip.sendFile(filePath).then((result) => {
-        if (!result.ok) reportFileError(result.error ?? 'Could not send the file.');
-      });
-    }
+    window.klip.sendDroppedFiles(Array.from(event.dataTransfer.files).slice(0, 5)).then((results) => {
+      const failed = results.find((result) => !result.ok);
+      if (failed) reportFileError(failed.error ?? 'Could not send the file.');
+    });
   }
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = state.history.filter((item) => {
       if (filter === 'links' && !(item.type === 'text' && isUrl(item.text ?? ''))) return false;
+      if (filter === 'images' && item.type !== 'image') return false;
+      if (filter === 'files' && item.type !== 'file') return false;
       if (filter === 'received' && item.direction !== 'received') return false;
       if (filter === 'sent' && item.direction !== 'sent') return false;
       if (
         q &&
         !(item.text ?? '').toLowerCase().includes(q) &&
+        !(item.name ?? '').toLowerCase().includes(q) &&
         !item.deviceName.toLowerCase().includes(q) &&
         !(item.type === 'image' && 'image'.includes(q))
       ) {
@@ -303,7 +308,7 @@ export default function Dashboard({ state }: { state: KlipState }) {
     if (!confirmRotate) {
       setConfirmRotate(true);
       window.clearTimeout(rotateTimer.current);
-      rotateTimer.current = window.setTimeout(() => setConfirmRotate(false), 3000);
+      rotateTimer.current = window.setTimeout(() => setConfirmRotate(false), 5000);
       return;
     }
     window.clearTimeout(rotateTimer.current);
@@ -343,31 +348,61 @@ export default function Dashboard({ state }: { state: KlipState }) {
       onDragLeave={() => setDropping(false)}
       onDrop={onDrop}
     >
+      {/* Screen-reader announcements: copy feedback and file errors. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {fileError || (copiedId ? 'Copied to clipboard' : '')}
+      </div>
+
       {dropping && (
-        <div className="pointer-events-none absolute -inset-2 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-indigo-500/60 bg-zinc-950/80 backdrop-blur-[1px]">
-          <p className="font-display text-sm font-semibold text-indigo-300">
+        <div className="pointer-events-none absolute -inset-2 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-klip-500/60 bg-zinc-950/80 backdrop-blur-[1px]">
+          <p className="font-display text-sm font-semibold text-klip-300">
             Drop to send — max 20 MB per file
           </p>
         </div>
       )}
+
+      {state.pendingRotation && (
+        <div className="animate-rise flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300">
+          <span>
+            <strong>{state.pendingRotation.deviceName}</strong> rotated the session code. Switch to the new
+            session?
+          </span>
+          <span className="flex shrink-0 gap-2">
+            <button
+              onClick={() => window.klip.resolveRotation(true)}
+              className="rounded-lg bg-amber-500/20 px-2.5 py-1 font-semibold transition-colors hover:bg-amber-500/30"
+            >
+              Switch
+            </button>
+            <button
+              onClick={() => window.klip.resolveRotation(false)}
+              className="rounded-lg px-2 py-1 transition-colors hover:text-amber-100"
+            >
+              Ignore
+            </button>
+          </span>
+        </div>
+      )}
+
       <div className="rounded-2xl border border-zinc-800/80 bg-gradient-to-br from-zinc-900/90 to-zinc-900/40 px-4 py-3">
         <div className="flex items-center justify-between">
-          <p className="text-[10px] font-medium uppercase tracking-widest text-zinc-500">Session</p>
-          <span className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-            <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
+          <p className="text-[10px] font-medium uppercase tracking-widest text-zinc-400">Session</p>
+          <span className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} aria-hidden />
             {status.label} · {Math.max(state.peerCount, 1)} device{state.peerCount > 1 ? 's' : ''}
           </span>
         </div>
         <div className="mt-1.5 flex items-center gap-2">
-          <code className="truncate font-mono text-sm tracking-wide text-indigo-300">{state.sessionCode}</code>
+          <code className="truncate font-mono text-sm tracking-wide text-klip-300">{state.sessionCode}</code>
           <button
             onClick={copyCode}
-            className={`shrink-0 rounded-md px-1.5 text-xs transition-colors ${
-              codeCopied ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-200'
+            className={`shrink-0 rounded-md p-1 text-xs transition-colors ${
+              codeCopied ? 'text-emerald-400' : 'text-zinc-400 hover:text-zinc-200'
             }`}
             title="Copy session code"
+            aria-label="Copy session code"
           >
-            {codeCopied ? '✓ copied' : '⧉'}
+            {codeCopied ? '✓ copied' : <Copy size={12} aria-hidden />}
           </button>
           {state.fingerprint.length > 0 && (
             <span
@@ -378,6 +413,11 @@ export default function Dashboard({ state }: { state: KlipState }) {
             </span>
           )}
         </div>
+        {state.devices.length > 0 && (
+          <p className="mt-1.5 truncate text-xs text-zinc-400" title={state.devices.join(', ')}>
+            Connected with: {state.devices.join(', ')}
+          </p>
+        )}
         <div className="mt-2.5 flex items-center gap-2 border-t border-zinc-800/60 pt-2.5">
           <button
             onClick={() => setShowQr(true)}
@@ -398,11 +438,17 @@ export default function Dashboard({ state }: { state: KlipState }) {
           </button>
           <button
             onClick={() => window.klip.leaveSession()}
-            className="ml-auto rounded-lg px-2.5 py-1 text-[11px] text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+            className="ml-auto rounded-lg px-2.5 py-1 text-[11px] text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
           >
             Leave
           </button>
         </div>
+        {confirmRotate && (
+          <p className="mt-2 text-xs leading-relaxed text-amber-300/80">
+            Rotation refreshes a leaked code, but anyone already holding the current one is asked to
+            follow — it does not evict them. To truly start clean, leave and create a new session.
+          </p>
+        )}
       </div>
 
       {state.paused && (
@@ -419,26 +465,29 @@ export default function Dashboard({ state }: { state: KlipState }) {
 
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600">
-            <SearchIcon />
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden>
+            <Search size={13} />
           </span>
           <input
             ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search history…"
+            aria-label="Search history"
             spellCheck={false}
-            className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 py-2 pl-9 pr-3 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none transition-colors focus:border-indigo-500"
+            className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 py-2 pl-9 pr-3 text-xs text-zinc-200 placeholder:text-zinc-500 outline-none transition-colors focus:border-klip-500"
           />
         </div>
-        <div className="flex shrink-0 rounded-xl border border-zinc-800 bg-zinc-900/60 p-0.5">
+        <div className="flex shrink-0 rounded-xl border border-zinc-800 bg-zinc-900/60 p-0.5" role="group" aria-label="Filter history">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               onClick={() => setFilter(f.id)}
               title={f.title}
-              className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                filter === f.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+              aria-label={f.title}
+              aria-pressed={filter === f.id}
+              className={`flex items-center rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                filter === f.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-300'
               }`}
             >
               {f.label}
@@ -449,14 +498,14 @@ export default function Dashboard({ state }: { state: KlipState }) {
           onClick={attachFile}
           title="Send a file to your devices (max 20 MB) — or drop one anywhere"
           aria-label="Send a file"
-          className="shrink-0 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5 text-zinc-500 transition-colors hover:border-zinc-700 hover:text-zinc-200"
+          className="shrink-0 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200"
         >
-          <PaperclipIcon />
+          <Paperclip size={13} aria-hidden />
         </button>
       </div>
 
       {fileError && (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3.5 py-2 text-xs text-red-300">
+        <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/10 px-3.5 py-2 text-xs text-red-300">
           {fileError}
         </div>
       )}
@@ -466,7 +515,7 @@ export default function Dashboard({ state }: { state: KlipState }) {
           <h2 className="font-display flex items-center gap-2 text-sm font-semibold text-zinc-300">
             History
             {state.history.length > 0 && (
-              <span className="rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-zinc-500">
+              <span className="rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
                 {visible.length === state.history.length ? state.history.length : `${visible.length}/${state.history.length}`}
               </span>
             )}
@@ -474,7 +523,7 @@ export default function Dashboard({ state }: { state: KlipState }) {
           {state.history.length > 0 && (
             <button
               onClick={() => window.klip.clearHistory()}
-              className="text-[11px] text-zinc-600 transition-colors hover:text-zinc-300"
+              className="text-[11px] text-zinc-400 transition-colors hover:text-zinc-200"
               title="Pinned clips are kept"
             >
               Clear all
@@ -484,26 +533,23 @@ export default function Dashboard({ state }: { state: KlipState }) {
 
         {state.history.length === 0 ? (
           <div className="animate-rise rounded-2xl border border-dashed border-zinc-800 py-14 text-center">
-            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 text-zinc-600">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="8" y="2" width="8" height="4" rx="1" />
-                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
-              </svg>
+            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 text-zinc-500">
+              <Clipboard size={18} aria-hidden />
             </div>
-            <p className="text-sm text-zinc-500">Nothing here yet.</p>
-            <p className="mt-1 text-xs text-zinc-600">
+            <p className="text-sm text-zinc-400">Nothing here yet.</p>
+            <p className="mt-1 text-xs text-zinc-500">
               Copy text, take a screenshot, or drop a file — it appears here and on your other devices, instantly.
             </p>
           </div>
         ) : visible.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-zinc-800 py-10 text-center">
-            <p className="text-sm text-zinc-500">No matches.</p>
+            <p className="text-sm text-zinc-400">No matches.</p>
             <button
               onClick={() => {
                 setQuery('');
                 setFilter('all');
               }}
-              className="mt-1 text-xs text-indigo-400 transition-colors hover:text-indigo-300"
+              className="mt-1 text-xs text-klip-400 transition-colors hover:text-klip-300"
             >
               Reset search & filters
             </button>

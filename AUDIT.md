@@ -1,5 +1,27 @@
 # Klip — Check-up complet (juin 2026)
 
+> **État au 10 juin 2026 — passe de correction complète.**
+> Tous les points 🔴 P1 et 🟠 P2 sont corrigés, ainsi que les 🟡 P3
+> actionnables : exclusion gestionnaires de mots de passe, rotation avec
+> confirmation + avertissement UI, codes générés uniquement, limites globales
+> du relai (salles/membres/IP/mémoire replay), caps des transferts entrants,
+> canal fichier durci (plus de chemin brut côté renderer), option « réception
+> dans l'historique seulement », avertissement safeStorage, accessibilité
+> clavier complète (focus visible, items activables, dialogs ARIA + focus
+> trap, Select clavier, combobox palette, aria-live, reduced-motion,
+> contrastes), tokens `klip-*` systématisés, icônes lucide unifiées,
+> protocole versionné (`v` + `hello`), deep link `klip://join` (avec
+> confirmation), liste des appareils connectés, filtres Images/Fichiers,
+> notifications de réception, sync sélective, raccourcis configurables avec
+> gestion d'échec, electron-updater branché sur les releases GitHub, ESLint +
+> `npm audit` en CI, Dependabot, tests unitaires ciblés, `SECURITY.md`,
+> `docs/design.md` (avec les notes iOS), Electron 36 → 42 (17 advisories).
+>
+> Reste ouvert : le **certificat de signature de code** (achat/configuration
+> externe — l'auto-update est prêt), la **mesure Argon2id sur iPhone** (il
+> faut un appareil), et les 💡 idées exploratoires (thème clair, toasts,
+> snippets, historique partagé persistant, macOS/Linux, i18n).
+
 Audit de l'application avant la version mobile iOS : sécurité, accessibilité,
 identité visuelle, fonctionnalités. Chaque point est noté par priorité :
 

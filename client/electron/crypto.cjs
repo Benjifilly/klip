@@ -76,6 +76,19 @@ function normalizeCode(code) {
 }
 
 /**
+ * Validate and canonicalize a session code. Only the generated shape is
+ * accepted (16 chars, dashes optional on input): the roomId is a plain hash
+ * of the code, so a human-chosen code like "benjamin" could be enumerated
+ * offline and its room joined. Returns the canonical xxxx-xxxx-xxxx-xxxx
+ * form, or null when the input is not a Klip code.
+ */
+function formatSessionCode(raw) {
+  const code = normalizeCode(raw).replace(/-/g, '');
+  if (!/^[a-z0-9]{16}$/.test(code)) return null;
+  return `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8, 12)}-${code.slice(12, 16)}`;
+}
+
+/**
  * Generate a human-friendly session code: 16 chars over a 31-char alphabet
  * (~79 bits of entropy), grouped as xxxx-xxxx-xxxx-xxxx.
  * Uses rejection sampling to avoid modulo bias.
@@ -161,6 +174,7 @@ async function decryptJSON(key, packet) {
 module.exports = {
   generateSessionCode,
   normalizeCode,
+  formatSessionCode,
   deriveSessionKey,
   deriveRoomId,
   deriveFingerprint,

@@ -1,5 +1,8 @@
 export type SyncStatus = 'disconnected' | 'connecting' | 'connected';
 
+/** What received clips are allowed to write into the local clipboard. */
+export type AutoCopyMode = 'all' | 'text' | 'off';
+
 export interface ClipItem {
   id: string;
   type: 'text' | 'image' | 'file';
@@ -16,6 +19,12 @@ export interface ClipItem {
   pinned: boolean;
 }
 
+/** A code rotation pushed by another device, awaiting the user's decision. */
+export interface PendingRotation {
+  code: string;
+  deviceName: string;
+}
+
 export interface KlipState {
   status: SyncStatus;
   peerCount: number;
@@ -27,6 +36,19 @@ export interface KlipState {
   deviceName: string;
   clipboardClearSeconds: number;
   autoStart: boolean;
+  autoCopy: AutoCopyMode;
+  notifyOnReceive: boolean;
+  syncText: boolean;
+  syncImages: boolean;
+  syncFiles: boolean;
+  shortcuts: { toggle: string; palette: string };
+  /** Global shortcuts that failed to register (conflicts with other apps). */
+  shortcutErrors: string[];
+  /** False when the OS keychain is unavailable and files sit unencrypted on disk. */
+  atRestEncrypted: boolean;
+  pendingRotation: PendingRotation | null;
+  /** Names of the other devices currently seen in the session. */
+  devices: string[];
   history: ClipItem[];
 }
 

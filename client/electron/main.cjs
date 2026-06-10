@@ -15,7 +15,7 @@
 
 const {
   app, BrowserWindow, Tray, Menu, clipboard, ipcMain, nativeImage,
-  globalShortcut, shell, safeStorage, screen, dialog,
+  globalShortcut, shell, safeStorage, screen, dialog, Notification,
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -32,8 +32,9 @@ const {
   encryptBytes,
   decryptBytes,
   generateSessionCode,
-  normalizeCode,
+  formatSessionCode,
 } = require('./crypto.cjs');
+const { sanitizeFileName, isAllowedRelayUrl } = require('./util.cjs');
 
 const POLL_INTERVAL_MS = 700;
 const MAX_TEXT_BYTES = 64 * 1024;
@@ -48,6 +49,16 @@ const CHUNK_TRANSFER_TTL_MS = 120_000;
 const PALETTE_SIZE = { width: 380, height: 380 };
 // Ctrl+C on a multi-selection in Explorer: send at most this many files.
 const MAX_CLIPBOARD_FILES = 3;
+/** Format version stamped on every payload — bump on incompatible changes. */
+const CLIP_FORMAT_VERSION = 1;
+// A malicious peer must not be able to balloon our memory with chunked
+// transfers that never complete: cap how many are in flight and their total size.
+const MAX_INFLIGHT_TRANSFERS = 8;
+const MAX_INFLIGHT_CHUNK_BYTES = 64 * 1024 * 1024;
+const MAX_CHUNKS_PER_TRANSFER = 128; // mirrors the relay's cap
+// Encrypted presence announcements drive the "connected devices" list.
+const PRESENCE_INTERVAL_MS = 60_000;
+const PRESENCE_TTL_MS = 150_000;
 
 let win = null;
 let paletteWin = null;
@@ -69,10 +80,18 @@ let lastFilesSig = '';
 let history = [];
 let quitting = false;
 let trayBalloonShown = false;
+/** Rotation requested by another device, waiting for the user's go-ahead. */
+let pendingRotation = null; // { code, deviceName }
+/** Other devices seen in the session: installId -> { name, ts } */
+const peers = new Map();
+let presenceTimer = null;
+/** Global shortcuts that failed to register (conflict with another app). */
+let shortcutErrors = [];
+let inflightChunkBytes = 0;
 
 /** Message ids we already handled (or sent), so relay replays don't duplicate. */
 const seenMids = new Set();
-/** In-flight chunked transfers: fid -> { tot, parts: Map<seq, Uint8Array>, ts } */
+/** In-flight chunked transfers: fid -> { tot, parts: Map<seq, Uint8Array>, bytes, ts } */
 const incomingChunks = new Map();
 
 const startHidden = process.argv.includes('--hidden');
@@ -84,6 +103,13 @@ const settings = {
   installId: '', // opaque per-install id, lets us drop our own replayed packets
   clipboardClearSeconds: 0, // 0 = never auto-clear
   autoStart: false,
+  autoCopy: 'all', // 'all' | 'text' | 'off' — what received clips may write to the clipboard
+  notifyOnReceive: false,
+  syncText: true,
+  syncImages: true,
+  syncFiles: true,
+  shortcutToggle: 'CommandOrControl+Shift+K',
+  shortcutPalette: 'CommandOrControl+Shift+V',
 };
 
 // --- Encrypted-at-rest storage ------------------------------------------------
@@ -147,15 +173,11 @@ function deleteEntryArtifacts(entry) {
   }
 }
 
-function sanitizeFileName(name) {
-  const clean = String(name ?? '')
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .slice(0, 120);
-  return clean || 'file';
-}
-
 // --- State --------------------------------------------------------------------
+
+function devicesList() {
+  return [...peers.values()].map((peer) => peer.name).sort();
+}
 
 function getState() {
   return {
@@ -168,6 +190,16 @@ function getState() {
     deviceName: settings.deviceName,
     clipboardClearSeconds: settings.clipboardClearSeconds,
     autoStart: settings.autoStart,
+    autoCopy: settings.autoCopy,
+    notifyOnReceive: settings.notifyOnReceive,
+    syncText: settings.syncText,
+    syncImages: settings.syncImages,
+    syncFiles: settings.syncFiles,
+    shortcuts: { toggle: settings.shortcutToggle, palette: settings.shortcutPalette },
+    shortcutErrors,
+    atRestEncrypted: canEncryptAtRest(),
+    pendingRotation,
+    devices: devicesList(),
     history,
   };
 }
@@ -284,13 +316,19 @@ async function onRelayMessage(raw) {
   }
 
   switch (msg.type) {
+    case 'hello':
+      // Relay greeting with its protocol version — nothing to do at v1.
+      break;
+
     case 'joined':
       status = 'connected';
       broadcastState();
+      announcePresence(true).catch(() => {});
       break;
 
     case 'peers':
       peerCount = Number(msg.count) || 0;
+      prunePeers();
       broadcastState();
       break;
 
@@ -314,7 +352,22 @@ async function onRelayMessage(raw) {
   }
 }
 
+function dropTransfer(fid) {
+  const transfer = incomingChunks.get(fid);
+  if (!transfer) return;
+  inflightChunkBytes -= transfer.bytes;
+  incomingChunks.delete(fid);
+}
+
 async function onChunk(data) {
+  // Validate chunk metadata before paying for decryption.
+  if (
+    typeof data.fid !== 'string' || data.fid.length > 64 ||
+    !Number.isInteger(data.seq) || !Number.isInteger(data.tot) ||
+    data.seq < 0 || data.tot < 1 || data.tot > MAX_CHUNKS_PER_TRANSFER || data.seq >= data.tot
+  ) {
+    return;
+  }
   let bytes;
   try {
     bytes = await decryptBytes(sessionKey, data);
@@ -323,13 +376,22 @@ async function onChunk(data) {
   }
   let transfer = incomingChunks.get(data.fid);
   if (!transfer) {
-    transfer = { tot: data.tot, parts: new Map(), ts: Date.now() };
+    // A flood of never-completing transfers must not balloon our memory.
+    if (incomingChunks.size >= MAX_INFLIGHT_TRANSFERS) return;
+    transfer = { tot: data.tot, parts: new Map(), bytes: 0, ts: Date.now() };
     incomingChunks.set(data.fid, transfer);
   }
+  if (data.tot !== transfer.tot || transfer.parts.has(data.seq)) return;
   transfer.parts.set(data.seq, bytes);
+  transfer.bytes += bytes.length;
+  inflightChunkBytes += bytes.length;
+  if (inflightChunkBytes > MAX_INFLIGHT_CHUNK_BYTES) {
+    dropTransfer(data.fid);
+    return;
+  }
   if (transfer.parts.size < transfer.tot) return;
 
-  incomingChunks.delete(data.fid);
+  dropTransfer(data.fid);
   const ordered = [];
   for (let seq = 0; seq < transfer.tot; seq++) {
     const part = transfer.parts.get(seq);
@@ -345,15 +407,47 @@ async function onChunk(data) {
   await applyIncoming(item);
 }
 
+function notifyUser(title, body) {
+  try {
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title, body, silent: true });
+    notification.on('click', showWindow);
+    notification.show();
+  } catch { /* notifications are best-effort */ }
+}
+
+function notifyReceived(deviceName, what) {
+  if (!settings.notifyOnReceive) return;
+  // Never put clip content in a system notification — only its type.
+  if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) return;
+  notifyUser('Klip', `${deviceName} sent ${what}.`);
+}
+
 async function applyIncoming(item) {
   if (!item || typeof item !== 'object') return;
+  // Packets from a future, incompatible client version are skipped whole.
+  if (Number.isInteger(item.v) && item.v > CLIP_FORMAT_VERSION) return;
   const deviceName = String(item.deviceName || 'Unknown device').slice(0, 64);
 
+  if (item.kind === 'presence') {
+    const id = String(item.id ?? '').slice(0, 64);
+    if (!id || id === settings.installId) return;
+    const previous = peers.get(id);
+    peers.set(id, { name: deviceName, ts: Date.now() });
+    // A newcomer says hello; answer so it learns we exist too.
+    if (item.hello) announcePresence(false).catch(() => {});
+    if (!previous || previous.name !== deviceName) broadcastState();
+    return;
+  }
+
   if (item.kind === 'rotate') {
-    const code = normalizeCode(item.code);
-    if (code && code !== settings.sessionCode) {
-      try { await joinSession(code); } catch { /* stay on the old session */ }
-    }
+    const code = formatSessionCode(item.code);
+    if (!code || code === settings.sessionCode) return;
+    // Never follow silently: anyone holding the code could otherwise move
+    // every device to a session they control without a trace.
+    pendingRotation = { code, deviceName };
+    notifyUser('Klip — session rotated', `${deviceName} rotated the session code. Open Klip to switch.`);
+    broadcastState();
     return;
   }
 
@@ -363,8 +457,9 @@ async function applyIncoming(item) {
     if (!png.length || png.length > MAX_IMAGE_BYTES) return;
     const image = nativeImage.createFromBuffer(png);
     if (image.isEmpty()) return;
-    setClipboardImageSilently(image, png);
+    if (settings.autoCopy === 'all') setClipboardImageSilently(image, png);
     addImageHistory(png, image, { deviceName, direction: 'received' });
+    notifyReceived(deviceName, 'an image');
     return;
   }
 
@@ -375,25 +470,66 @@ async function applyIncoming(item) {
     // Never written to disk in plaintext, never executed, never auto-opened:
     // the file sits encrypted in the blob store until the user clicks "Save".
     addFileHistory(sanitizeFileName(item.name), buf, { deviceName, direction: 'received' });
+    notifyReceived(deviceName, 'a file');
     return;
   }
 
   // 'text', or legacy packets without a kind field.
   if (typeof item.text !== 'string' || !item.text) return;
-  setClipboardSilently(item.text);
+  if (settings.autoCopy !== 'off') setClipboardSilently(item.text);
   addHistory({ type: 'text', text: item.text, deviceName, direction: 'received' });
+  notifyReceived(deviceName, 'a clip');
+}
+
+// --- Presence -------------------------------------------------------------------
+
+/**
+ * Encrypted presence announcements: each device periodically broadcasts its
+ * name so the UI can show *which* devices are connected, not just how many.
+ * The relay only ever sees ciphertext, like every other packet.
+ */
+async function announcePresence(hello) {
+  if (!sessionKey) return;
+  await sendEncrypted({
+    kind: 'presence',
+    id: settings.installId,
+    name: settings.deviceName,
+    hello: Boolean(hello),
+    ts: Date.now(),
+  });
+}
+
+function prunePeers() {
+  const cutoff = Date.now() - PRESENCE_TTL_MS;
+  let changed = false;
+  for (const [id, peer] of peers) {
+    if (peer.ts < cutoff) {
+      peers.delete(id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function startPresenceLoop() {
+  clearInterval(presenceTimer);
+  presenceTimer = setInterval(() => {
+    if (status === 'connected' && !paused) announcePresence(false).catch(() => {});
+    if (prunePeers()) broadcastState();
+  }, PRESENCE_INTERVAL_MS);
 }
 
 /** Encrypt a payload and send it, chunking transparently when it's large. */
 async function sendEncrypted(payload) {
   if (!sessionKey || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const versioned = { v: CLIP_FORMAT_VERSION, ...payload };
   const mid = globalThis.crypto.randomUUID();
-  const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
+  const bytes = Buffer.from(JSON.stringify(versioned), 'utf8');
 
   if (bytes.length <= CHUNK_BYTES) {
     rememberMid(mid);
-    const data = await encryptJSON(sessionKey, payload);
-    ws.send(JSON.stringify({ type: 'clip', mid, sid: settings.installId, data }));
+    const data = await encryptJSON(sessionKey, versioned);
+    ws.send(JSON.stringify({ type: 'clip', v: CLIP_FORMAT_VERSION, mid, sid: settings.installId, data }));
     return;
   }
 
@@ -405,13 +541,33 @@ async function sendEncrypted(payload) {
     const chunkMid = `${mid}:${seq}`;
     rememberMid(chunkMid);
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'clip', mid: chunkMid, sid: settings.installId, data: { ...data, fid, seq, tot } }));
+    ws.send(JSON.stringify({ type: 'clip', v: CLIP_FORMAT_VERSION, mid: chunkMid, sid: settings.installId, data: { ...data, fid, seq, tot } }));
   }
 }
 
 // --- Clipboard ------------------------------------------------------------------
 
 const sha1 = (buf) => createHash('sha1').update(buf).digest('hex');
+
+/**
+ * Password managers (KeePass, Bitwarden, 1Password…) tag their copies with
+ * Windows clipboard formats that ask monitoring tools to look away. Honor
+ * them: a copied password must never enter the history or leave the machine.
+ * The presence of the exclusion format is the signal; the history/cloud flags
+ * are a DWORD where 0 means "opt out".
+ */
+function clipboardMarkedSensitive() {
+  if (process.platform !== 'win32') return false;
+  try {
+    if (clipboard.has('ExcludeClipboardContentFromMonitorProcessing')) return true;
+    for (const format of ['CanIncludeInClipboardHistory', 'CanUploadToCloudClipboard']) {
+      if (!clipboard.has(format)) continue;
+      const flag = clipboard.readBuffer(format);
+      if (flag.length >= 4 && flag.readUInt32LE(0) === 0) return true;
+    }
+  } catch { /* unreadable flag — treat as not sensitive */ }
+  return false;
+}
 
 /**
  * Files copied in Explorer (Ctrl+C) land on the clipboard as CF_HDROP:
@@ -530,12 +686,17 @@ function startClipboardWatcher() {
   setInterval(() => {
     if (paused) return;
 
+    // A copy tagged by a password manager is swallowed whole: remember it so
+    // it never syncs, not even after the next poll, and capture nothing.
+    const sensitive = clipboardMarkedSensitive();
+
     // Text first: apps like Excel expose cells as both text and image, and
     // the text representation is what users expect to sync.
     const text = clipboard.readText();
     if (text) {
       if (text === lastClipboardText) return;
       lastClipboardText = text;
+      if (sensitive || !settings.syncText) return;
       if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES) return;
       onLocalCopy(text).catch(() => {});
       return;
@@ -547,6 +708,7 @@ function startClipboardWatcher() {
       const sig = files.join('\n');
       if (sig === lastFilesSig) return;
       lastFilesSig = sig;
+      if (sensitive || !settings.syncFiles) return;
       for (const file of files.slice(0, MAX_CLIPBOARD_FILES)) {
         sendFileFromPath(file).catch(() => { /* folder or oversized — skip */ });
       }
@@ -560,6 +722,7 @@ function startClipboardWatcher() {
       const hash = sha1(png);
       if (hash === lastImageHash) return;
       lastImageHash = hash;
+      if (sensitive || !settings.syncImages) return;
       if (png.length > MAX_IMAGE_BYTES) return;
       onLocalImageCopy(png, image).catch(() => {});
     }
@@ -569,7 +732,7 @@ function startClipboardWatcher() {
   setInterval(() => {
     const cutoff = Date.now() - CHUNK_TRANSFER_TTL_MS;
     for (const [fid, transfer] of incomingChunks) {
-      if (transfer.ts < cutoff) incomingChunks.delete(fid);
+      if (transfer.ts < cutoff) dropTransfer(fid);
     }
   }, 30_000);
 }
@@ -589,14 +752,18 @@ function setPaused(value) {
 // --- Session --------------------------------------------------------------------
 
 async function joinSession(rawCode) {
-  const code = normalizeCode(rawCode);
-  if (!/^[a-z0-9][a-z0-9-]{6,63}$/.test(code)) {
-    throw new Error('Invalid session code.');
+  // Only machine-generated codes are accepted: the roomId is a plain hash of
+  // the code, so a weak human-chosen code could be enumerated offline.
+  const code = formatSessionCode(rawCode);
+  if (!code) {
+    throw new Error('Invalid code — Klip codes look like xxxx-xxxx-xxxx-xxxx.');
   }
   sessionKey = await deriveSessionKey(code);
   roomId = await deriveRoomId(code);
   fingerprint = await deriveFingerprint(code);
   settings.sessionCode = code;
+  pendingRotation = null;
+  peers.clear();
   saveSecureJson(settingsPath(), settings);
   reconnectDelay = 1_000;
   connect();
@@ -608,6 +775,8 @@ function leaveSession() {
   roomId = null;
   fingerprint = [];
   settings.sessionCode = '';
+  pendingRotation = null;
+  peers.clear();
   saveSecureJson(settingsPath(), settings);
   status = 'disconnected';
   peerCount = 0;
@@ -748,8 +917,8 @@ function toggleWindow() {
 
 /** Windows menus treat `&` as a mnemonic; flatten + escape + truncate clip text. */
 function trayClipLabel(entry) {
-  if (entry.type === 'image') return `🖼 Image — ${entry.deviceName}`;
-  if (entry.type === 'file') return `📄 ${String(entry.name ?? 'file').replace(/&/g, '&&').slice(0, 40)}`;
+  if (entry.type === 'image') return `Image — ${entry.deviceName}`;
+  if (entry.type === 'file') return `File — ${String(entry.name ?? 'file').replace(/&/g, '&&').slice(0, 40)}`;
   const flat = String(entry.text ?? '').replace(/\s+/g, ' ').trim().replace(/&/g, '&&');
   return flat.length > 45 ? `${flat.slice(0, 45)}…` : flat || '(empty)';
 }
@@ -769,8 +938,8 @@ function rebuildTrayMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: statusLabel, enabled: false },
     { type: 'separator' },
-    { label: 'Open Klip', accelerator: 'CmdOrCtrl+Shift+K', click: showWindow },
-    { label: 'Quick paste', accelerator: 'CmdOrCtrl+Shift+V', click: togglePalette },
+    { label: 'Open Klip', accelerator: settings.shortcutToggle, click: showWindow },
+    { label: 'Quick paste', accelerator: settings.shortcutPalette, click: togglePalette },
     { label: 'Recent clips', enabled: recent.length > 0, submenu: recent },
     { label: 'Pause sync', type: 'checkbox', checked: paused, click: (item) => setPaused(item.checked) },
     { type: 'separator' },
@@ -839,28 +1008,81 @@ async function sendFileFromPath(filePath) {
   await sendEncrypted({ kind: 'file', name, data: buf.toString('base64'), deviceName: settings.deviceName, ts: Date.now() });
 }
 
-// --- Relay URL policy ------------------------------------------------------------
+// --- Global shortcuts -------------------------------------------------------------
 
-/** Plain ws:// is only acceptable on loopback/LAN — the internet gets TLS. */
-function isAllowedRelayUrl(value) {
-  let url;
+const ACCEL_MODIFIERS = new Set([
+  'CommandOrControl', 'CmdOrCtrl', 'Ctrl', 'Control', 'Alt', 'AltGr', 'Shift', 'Super', 'Meta',
+]);
+
+/** Accelerator shape check: at least one modifier + one plain key. */
+function isValidAccelerator(value) {
+  if (typeof value !== 'string' || value.length > 64) return false;
+  const parts = value.split('+');
+  if (parts.length < 2) return false;
+  const key = parts.pop();
+  if (!parts.every((part) => ACCEL_MODIFIERS.has(part))) return false;
+  return /^([A-Za-z0-9]|F([1-9]|1[0-9]|2[0-4])|Space|Tab|Up|Down|Left|Right|Home|End|PageUp|PageDown|Insert|Delete)$/.test(key);
+}
+
+/** (Re)register the two global shortcuts, surfacing conflicts instead of failing silently. */
+function registerShortcuts() {
+  globalShortcut.unregisterAll();
+  shortcutErrors = [];
+  const bind = (accelerator, handler, label) => {
+    try {
+      if (globalShortcut.register(accelerator, handler)) return;
+    } catch { /* malformed accelerator — falls through to the error below */ }
+    shortcutErrors.push(`${label} (${accelerator.replace('CommandOrControl', 'Ctrl')}) could not be registered — another app may already use it.`);
+  };
+  bind(settings.shortcutToggle, toggleWindow, 'Show/hide Klip');
+  bind(settings.shortcutPalette, togglePalette, 'Quick paste');
+}
+
+// --- Deep link (klip://join) --------------------------------------------------------
+
+function extractDeepLink(argv) {
+  return argv.find((arg) => typeof arg === 'string' && arg.startsWith('klip://'));
+}
+
+/**
+ * klip://join?code=…&relay=… — pairing in one click (QR codes already emit
+ * this URI). Joining is gated on an explicit confirmation: any webpage can
+ * trigger a protocol launch, and silently joining an attacker's session would
+ * hand them everything the user copies from then on.
+ */
+async function handleDeepLink(url) {
+  if (!url) return;
+  let parsed;
   try {
-    url = new URL(value);
+    parsed = new URL(url);
   } catch {
-    return false;
+    return;
   }
-  if (url.protocol === 'wss:') return true;
-  if (url.protocol !== 'ws:') return false;
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  return (
-    host === 'localhost' ||
-    host === '::1' ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    host.endsWith('.local')
-  );
+  const action = (parsed.hostname || parsed.pathname.replace(/\//g, '')).toLowerCase();
+  if (parsed.protocol !== 'klip:' || action !== 'join') return;
+  const code = formatSessionCode(parsed.searchParams.get('code') ?? '');
+  if (!code) return;
+  const relay = (parsed.searchParams.get('relay') ?? '').trim();
+  const useRelay = relay && /^wss?:\/\/.+/.test(relay) && isAllowedRelayUrl(relay) ? relay : '';
+
+  showWindow();
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Join session', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Klip',
+    message: 'Join this session?',
+    detail: `Everything you copy will be shared with the devices on this session.\n\nCode: ${code}${useRelay ? `\nRelay: ${useRelay}` : ''}`,
+  });
+  if (response !== 0) return;
+  if (useRelay) {
+    settings.serverUrl = useRelay;
+    saveSecureJson(settingsPath(), settings);
+  }
+  try {
+    await joinSession(code);
+  } catch { /* invalid code — ignore */ }
 }
 
 // --- IPC ------------------------------------------------------------------------
@@ -887,6 +1109,22 @@ function registerIpc() {
     try {
       const code = await rotateSession();
       return { ok: true, code };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  // User's verdict on a rotation initiated by another device.
+  ipcMain.handle('klip:resolve-rotation', async (_event, accept) => {
+    const rotation = pendingRotation;
+    pendingRotation = null;
+    if (!accept || !rotation) {
+      broadcastState();
+      return { ok: true };
+    }
+    try {
+      await joinSession(rotation.code);
+      return { ok: true };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -1008,9 +1246,49 @@ function registerIpc() {
     if (value) {
       settings.deviceName = value;
       saveSecureJson(settingsPath(), settings);
+      announcePresence(false).catch(() => {});
       broadcastState();
     }
     return { ok: true };
+  });
+
+  ipcMain.handle('klip:set-auto-copy', (_event, mode) => {
+    if (!['all', 'text', 'off'].includes(mode)) return { ok: false, error: 'Invalid mode.' };
+    settings.autoCopy = mode;
+    saveSecureJson(settingsPath(), settings);
+    broadcastState();
+    return { ok: true };
+  });
+
+  ipcMain.handle('klip:set-notify-on-receive', (_event, value) => {
+    settings.notifyOnReceive = Boolean(value);
+    saveSecureJson(settingsPath(), settings);
+    broadcastState();
+    return { ok: true };
+  });
+
+  ipcMain.handle('klip:set-sync-kinds', (_event, kinds) => {
+    if (!kinds || typeof kinds !== 'object') return { ok: false, error: 'Invalid value.' };
+    settings.syncText = Boolean(kinds.text);
+    settings.syncImages = Boolean(kinds.images);
+    settings.syncFiles = Boolean(kinds.files);
+    saveSecureJson(settingsPath(), settings);
+    broadcastState();
+    return { ok: true };
+  });
+
+  ipcMain.handle('klip:set-shortcuts', (_event, shortcuts) => {
+    const toggle = String(shortcuts?.toggle ?? '');
+    const palette = String(shortcuts?.palette ?? '');
+    if (!isValidAccelerator(toggle) || !isValidAccelerator(palette) || toggle === palette) {
+      return { ok: false, error: 'Invalid shortcut — combine Ctrl/Alt/Shift with a key.' };
+    }
+    settings.shortcutToggle = toggle;
+    settings.shortcutPalette = palette;
+    saveSecureJson(settingsPath(), settings);
+    registerShortcuts();
+    broadcastState();
+    return shortcutErrors.length ? { ok: false, error: shortcutErrors.join(' ') } : { ok: true };
   });
 
   ipcMain.handle('klip:set-clipboard-clear', (_event, seconds) => {
@@ -1060,7 +1338,20 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.setAppUserModelId('app.klip.desktop'); // taskbar/tray identity on Windows
-  app.on('second-instance', showWindow);
+
+  // klip://join deep links — pairing in one click (always behind a confirm dialog).
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient('klip', process.execPath, [path.resolve(process.argv[1])]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient('klip');
+  }
+
+  app.on('second-instance', (_event, argv) => {
+    showWindow();
+    handleDeepLink(extractDeepLink(argv)).catch(() => {});
+  });
 
   app.whenReady().then(async () => {
     Object.assign(settings, loadSecureJson(settingsPath(), {}));
@@ -1077,9 +1368,18 @@ if (!app.requestSingleInstanceLock()) {
     createPaletteWindow();
     createTray();
     startClipboardWatcher();
+    startPresenceLoop();
     ensurePasteHelper(); // warm it up so the first palette paste is instant
-    globalShortcut.register('CommandOrControl+Shift+K', toggleWindow);
-    globalShortcut.register('CommandOrControl+Shift+V', togglePalette);
+    registerShortcuts();
+
+    // Packaged builds check GitHub releases for updates; failures are silent
+    // (no release published yet, offline, …) and never block startup.
+    if (app.isPackaged) {
+      try {
+        const { autoUpdater } = require('electron-updater');
+        autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+      } catch { /* updater not bundled in this build */ }
+    }
 
     // Resume the previous session, if any.
     if (settings.sessionCode) {
@@ -1089,6 +1389,9 @@ if (!app.requestSingleInstanceLock()) {
         settings.sessionCode = '';
       }
     }
+
+    // App launched by clicking a klip:// link.
+    handleDeepLink(extractDeepLink(process.argv)).catch(() => {});
   });
 
   app.on('window-all-closed', () => { /* keep running in the tray */ });

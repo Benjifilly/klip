@@ -14,9 +14,20 @@
     "dev:client": "npm run dev --workspace client",
     "build:client": "npm run build --workspace client",
     "dist:client": "npm run dist --workspace client",
-    "test": "node tests/e2e.cjs"
+    "lint": "eslint .",
+    "test": "node tests/unit.cjs && node tests/e2e.cjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "overrides": {
+    "shell-quote": ">=1.8.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "typescript-eslint": "^8.61.0"
   }
 }

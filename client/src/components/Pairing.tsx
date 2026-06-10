@@ -1,33 +1,11 @@
 import { useState } from 'react';
+import { Globe, Lock, Zap } from 'lucide-react';
 import appIcon from '../../assets/icon.png';
 
 const FEATURES = [
-  {
-    label: 'Instant',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M13 2 3 14h7l-1 8 11-12h-7l1-8z" />
-      </svg>
-    ),
-  },
-  {
-    label: 'E2E encrypted',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Anywhere',
-    icon: (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-      </svg>
-    ),
-  },
+  { label: 'Instant', icon: <Zap size={15} aria-hidden /> },
+  { label: 'E2E encrypted', icon: <Lock size={15} aria-hidden /> },
+  { label: 'Anywhere', icon: <Globe size={15} aria-hidden /> },
 ];
 
 export default function Pairing() {
@@ -59,7 +37,7 @@ export default function Pairing() {
       <div className="relative mx-auto">
         <div
           aria-hidden
-          className="absolute -inset-6 rounded-full bg-indigo-500/20 blur-2xl"
+          className="absolute -inset-6 rounded-full bg-klip-500/20 blur-2xl"
         />
         <img src={appIcon} alt="Klip" draggable={false} className="relative h-16 w-16" />
       </div>
@@ -75,12 +53,12 @@ export default function Pairing() {
       <button
         onClick={createSession}
         disabled={busy}
-        className="brand-gradient rounded-2xl px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+        className="brand-gradient rounded-2xl px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-klip-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
       >
         {busy ? 'Working…' : 'Create a new session'}
       </button>
 
-      <div className="flex items-center gap-3 text-xs text-zinc-600">
+      <div className="flex items-center gap-3 text-xs text-zinc-500" aria-hidden>
         <div className="h-px flex-1 bg-zinc-800" />
         or join an existing one
         <div className="h-px flex-1 bg-zinc-800" />
@@ -91,9 +69,10 @@ export default function Pairing() {
           value={code}
           onChange={(event) => setCode(event.target.value)}
           placeholder="xxxx-xxxx-xxxx-xxxx"
+          aria-label="Session code — xxxx-xxxx-xxxx-xxxx"
           spellCheck={false}
           autoComplete="off"
-          className="min-w-0 flex-1 rounded-xl border border-zinc-800 bg-zinc-900/70 px-4 py-3 text-center font-mono text-sm tracking-wider text-zinc-100 placeholder:text-zinc-600 outline-none transition-colors focus:border-indigo-500"
+          className="min-w-0 flex-1 rounded-xl border border-zinc-800 bg-zinc-900/70 px-4 py-3 text-center font-mono text-sm tracking-wider text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors focus:border-klip-500"
         />
         <button
           type="submit"
@@ -104,7 +83,7 @@ export default function Pairing() {
         </button>
       </form>
 
-      {error && <p className="text-center text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-center text-sm text-red-400">{error}</p>}
 
       <div className="mt-2 grid grid-cols-3 gap-2">
         {FEATURES.map((feature) => (
@@ -112,8 +91,8 @@ export default function Pairing() {
             key={feature.label}
             className="flex flex-col items-center gap-1.5 rounded-xl border border-zinc-800/60 bg-zinc-900/40 px-2 py-3"
           >
-            <span className="text-indigo-400">{feature.icon}</span>
-            <span className="text-[11px] text-zinc-500">{feature.label}</span>
+            <span className="text-klip-400">{feature.icon}</span>
+            <span className="text-[11px] text-zinc-400">{feature.label}</span>
           </div>
         ))}
       </div>

@@ -1,4 +1,4 @@
-import type { IpcResult, KlipState } from './types';
+import type { AutoCopyMode, IpcResult, KlipState } from './types';
 
 declare global {
   interface Window {
@@ -8,13 +8,14 @@ declare global {
       joinSession: (code: string) => Promise<IpcResult>;
       leaveSession: () => Promise<IpcResult>;
       rotateSession: () => Promise<IpcResult & { code?: string }>;
+      resolveRotation: (accept: boolean) => Promise<IpcResult>;
       copyItem: (text: string) => Promise<IpcResult>;
       copyEntry: (id: string) => Promise<IpcResult>;
       pasteEntry: (id: string) => Promise<IpcResult>;
-      sendFile: (filePath: string) => Promise<IpcResult>;
+      /** Send files dropped onto the window — only real File objects are accepted. */
+      sendDroppedFiles: (files: Iterable<File>) => Promise<IpcResult[]>;
       attachFile: () => Promise<IpcResult>;
       saveFile: (id: string) => Promise<IpcResult>;
-      getPathForFile: (file: File) => string;
       togglePin: (id: string) => Promise<IpcResult>;
       clearHistory: () => Promise<IpcResult>;
       deleteItem: (id: string) => Promise<IpcResult>;
@@ -24,6 +25,10 @@ declare global {
       setDeviceName: (name: string) => Promise<IpcResult>;
       setClipboardClear: (seconds: number) => Promise<IpcResult>;
       setAutoStart: (enabled: boolean) => Promise<IpcResult>;
+      setAutoCopy: (mode: AutoCopyMode) => Promise<IpcResult>;
+      setNotifyOnReceive: (enabled: boolean) => Promise<IpcResult>;
+      setSyncKinds: (kinds: { text: boolean; images: boolean; files: boolean }) => Promise<IpcResult>;
+      setShortcuts: (shortcuts: { toggle: string; palette: string }) => Promise<IpcResult>;
       paletteHide: () => Promise<IpcResult>;
       windowControl: (action: 'minimize' | 'maximize' | 'close') => Promise<IpcResult>;
       onState: (callback: (state: KlipState) => void) => () => void;

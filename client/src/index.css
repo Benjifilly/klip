@@ -5,17 +5,24 @@
  * Klip visual identity
  * --------------------
  * Display face : Space Grotesk (bundled locally — no network at runtime)
- * Accent       : indigo → violet gradient ("klip gradient")
+ * Accent       : klip gradient (klip-500 → klip-pop)
  * Surfaces     : zinc-950 base, zinc-900 cards, 1px zinc-800 borders
  * Signature    : soft top glow, rounded-xl/2xl radii, kbd-styled hints
+ *
+ * Every accent in the app uses the `klip-*` tokens below — components never
+ * hardcode a palette name, so re-skinning the app (or adding a light theme)
+ * is a matter of editing this block only.
  */
 
 @theme {
   --font-display: "Space Grotesk Variable", "Segoe UI", system-ui, sans-serif;
+  --color-klip-200: #e0e7ff;
   --color-klip-300: #c7d2fe;
   --color-klip-400: #818cf8;
   --color-klip-500: #6366f1;
   --color-klip-600: #4f46e5;
+  /* Hot end of the brand gradient. */
+  --color-klip-pop: #a855f7;
 }
 
 :root {
@@ -24,7 +31,7 @@
 
 /* The brand gradient, for primary surfaces (buttons, logo tiles). */
 .brand-gradient {
-  background-image: linear-gradient(135deg, #6366f1, #a855f7);
+  background-image: linear-gradient(135deg, var(--color-klip-500), var(--color-klip-pop));
 }
 
 /* The Klip wordmark: display face + soft gradient ink. */
@@ -47,8 +54,45 @@
   -webkit-app-region: no-drag;
 }
 
+/*
+ * Keyboard accessibility: every control shows a visible, branded focus ring.
+ * Inputs opt out (they signal focus by switching their border color instead).
+ */
+:where(button, [role="button"], [role="option"], a, summary):focus-visible {
+  outline: 2px solid var(--color-klip-400);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-pulse,
+  .animate-pop {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Checkbox check-in: a small overshoot pop while the tick draws itself. */
+@keyframes pop {
+  0% {
+    transform: scale(0.8);
+  }
+  60% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-pop {
+  animation: pop 0.18s ease-out;
+}
+
 ::selection {
-  background: #6366f1;
+  background: var(--color-klip-500);
   color: #fff;
 }
 

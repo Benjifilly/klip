@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Clipboard } from 'lucide-react';
 import type { ClipItem, KlipState } from '../types';
 
 /**
@@ -97,29 +98,44 @@ export default function Palette() {
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Quick paste — type to filter…"
           spellCheck={false}
-          className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-600 outline-none transition-colors focus:border-indigo-500"
+          role="combobox"
+          aria-label="Quick paste — type to filter the history"
+          aria-expanded={items.length > 0}
+          aria-controls="palette-list"
+          aria-autocomplete="list"
+          aria-activedescendant={items[selected] ? `palette-opt-${items[selected].id}` : undefined}
+          className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-200 placeholder:text-zinc-500 outline-none transition-colors focus:border-klip-500"
         />
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
         {items.length === 0 ? (
-          <p className="px-2 py-8 text-center text-xs text-zinc-600">
-            {state?.history.length ? 'No matches.' : 'Nothing in the history yet.'}
-          </p>
+          <div className="px-2 py-8 text-center">
+            <div className="mx-auto mb-2.5 flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900 text-zinc-500">
+              <Clipboard size={15} aria-hidden />
+            </div>
+            <p className="text-xs text-zinc-400">
+              {state?.history.length ? 'No matches.' : 'Nothing in the history yet.'}
+            </p>
+          </div>
         ) : (
-          <ul className="flex flex-col gap-0.5">
+          <ul id="palette-list" role="listbox" aria-label="Recent clips" className="flex flex-col gap-0.5">
             {items.map((item, index) => (
-              <li key={item.id}>
+              <li key={item.id} role="presentation">
                 <button
+                  id={`palette-opt-${item.id}`}
+                  role="option"
+                  aria-selected={index === selected}
                   onClick={(event) => act(item, event.ctrlKey || event.metaKey)}
                   onMouseEnter={() => setSelected(index)}
                   className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
-                    index === selected ? 'bg-indigo-500/15' : ''
+                    index === selected ? 'bg-klip-500/15' : ''
                   }`}
                 >
                   <span
+                    aria-hidden
                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${
-                      index === selected ? 'bg-indigo-500/30 text-indigo-200' : 'bg-zinc-900 text-zinc-600'
+                      index === selected ? 'bg-klip-500/30 text-klip-200' : 'bg-zinc-900 text-zinc-500'
                     }`}
                   >
                     {index + 1}
@@ -132,7 +148,7 @@ export default function Palette() {
                   ) : (
                     <span className="truncate text-xs text-zinc-200">{item.text}</span>
                   )}
-                  {item.pinned && <span className="ml-auto shrink-0 text-[10px] text-indigo-400">pinned</span>}
+                  {item.pinned && <span className="ml-auto shrink-0 text-[10px] text-klip-400">pinned</span>}
                 </button>
               </li>
             ))}
@@ -140,7 +156,7 @@ export default function Palette() {
         )}
       </div>
 
-      <div className="flex items-center justify-center gap-3 border-t border-zinc-900 px-3 py-1.5 text-[10px] text-zinc-600">
+      <div className="flex items-center justify-center gap-2.5 border-t border-zinc-900 px-3 py-1 text-[10px] text-zinc-400">
         <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span><kbd>Enter</kbd> paste</span>
         <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> copy</span>

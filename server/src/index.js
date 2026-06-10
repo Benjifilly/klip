@@ -23,10 +23,16 @@
  *     own packets coming back through replay.
  *   - `data.fid/seq/tot` — chunked transfer metadata for payloads larger than
  *     one frame (images). Each chunk is independently encrypted.
+ *   - `v` (int) — protocol version of the packet, forwarded verbatim. The
+ *     relay greets every connection with `{type:'hello', v}` so clients can
+ *     detect a relay that is too old or too new for them.
  */
 
 const http = require('http');
 const { WebSocketServer } = require('ws');
+
+/** Version announced in the `hello` greeting and accepted in packets. */
+const PROTOCOL_VERSION = 1;
 
 const DEFAULTS = {
   port: Number(process.env.PORT) || 8787,
@@ -39,6 +45,17 @@ const DEFAULTS = {
   replayMax: Number(process.env.KLIP_REPLAY_MAX ?? 128),
   replayMaxBytes: Number(process.env.KLIP_REPLAY_MAX_BYTES ?? 8 * 1024 * 1024),
   replayTtlMs: Number(process.env.KLIP_REPLAY_TTL_MS ?? 120_000),
+  // Global limits — keep one abusive client (or many) from exhausting memory.
+  maxRooms: Number(process.env.KLIP_MAX_ROOMS ?? 512),
+  maxRoomMembers: Number(process.env.KLIP_MAX_ROOM_MEMBERS ?? 10),
+  maxConnsPerIp: Number(process.env.KLIP_MAX_CONNS_PER_IP ?? 32),
+  replayGlobalMaxBytes: Number(process.env.KLIP_REPLAY_GLOBAL_MAX_BYTES ?? 64 * 1024 * 1024),
+  // Per-IP limits only make sense on the real client address. Behind a
+  // reverse proxy the socket address is the proxy's, so trust the
+  // x-forwarded-for header there (auto-detected on Fly.io).
+  trustProxy: process.env.KLIP_TRUST_PROXY
+    ? process.env.KLIP_TRUST_PROXY !== '0'
+    : Boolean(process.env.FLY_APP_NAME),
 };
 
 const ROOM_ID_RE = /^[a-f0-9]{64}$/;
@@ -51,13 +68,24 @@ function createRelay(options = {}) {
   const rooms = new Map();
   /** @type {Map<string, {entries: Array<{ts: number, out: string}>, bytes: number}>} roomId -> recent ciphertext packets */
   const buffers = new Map();
+  /** @type {Map<string, number>} client ip -> open connections */
+  const connsPerIp = new Map();
 
   const metrics = { forwarded: 0, replayed: 0 };
+  let replayBytesTotal = 0;
 
   function bufferedCount() {
     let total = 0;
     for (const buffer of buffers.values()) total += buffer.entries.length;
     return total;
+  }
+
+  function clientIp(req) {
+    if (cfg.trustProxy) {
+      const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+      if (fwd) return fwd;
+    }
+    return req.socket.remoteAddress ?? 'unknown';
   }
 
   const server = http.createServer((req, res) => {
@@ -84,6 +112,9 @@ function createRelay(options = {}) {
         '# HELP klip_buffered_messages Ciphertext packets currently held for replay.',
         '# TYPE klip_buffered_messages gauge',
         `klip_buffered_messages ${bufferedCount()}`,
+        '# HELP klip_replay_bytes Total bytes held in replay buffers.',
+        '# TYPE klip_replay_bytes gauge',
+        `klip_replay_bytes ${replayBytesTotal}`,
         '',
       ].join('\n'));
       return;
@@ -112,10 +143,30 @@ function createRelay(options = {}) {
     if (!buffer) return [];
     const cutoff = Date.now() - cfg.replayTtlMs;
     while (buffer.entries.length && buffer.entries[0].ts < cutoff) {
-      buffer.bytes -= buffer.entries.shift().out.length;
+      const dropped = buffer.entries.shift().out.length;
+      buffer.bytes -= dropped;
+      replayBytesTotal -= dropped;
     }
     if (buffer.entries.length === 0) buffers.delete(roomId);
     return buffer.entries;
+  }
+
+  /** Keep the sum of all replay buffers under the global memory budget. */
+  function evictReplayGlobal() {
+    while (replayBytesTotal > cfg.replayGlobalMaxBytes) {
+      const next = buffers.entries().next();
+      if (next.done) {
+        replayBytesTotal = 0; // bookkeeping drifted — resync
+        return;
+      }
+      const [roomId, buffer] = next.value;
+      const entry = buffer.entries.shift();
+      if (entry) {
+        buffer.bytes -= entry.out.length;
+        replayBytesTotal -= entry.out.length;
+      }
+      if (buffer.entries.length === 0) buffers.delete(roomId);
+    }
   }
 
   function joinRoom(ws, roomId) {
@@ -140,15 +191,30 @@ function createRelay(options = {}) {
     else broadcastPeers(roomId);
   }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const ip = clientIp(req);
+    const open = (connsPerIp.get(ip) ?? 0) + 1;
+    if (open > cfg.maxConnsPerIp) {
+      ws.close(1013, 'too many connections');
+      return;
+    }
+    connsPerIp.set(ip, open);
+
     ws.isAlive = true;
     ws.roomId = null;
     ws.msgWindowStart = Date.now();
     ws.msgCount = 0;
 
+    send(ws, { type: 'hello', v: PROTOCOL_VERSION });
+
     ws.on('pong', () => { ws.isAlive = true; });
     ws.on('error', () => { /* 'close' follows */ });
-    ws.on('close', () => leaveRoom(ws));
+    ws.on('close', () => {
+      leaveRoom(ws);
+      const remaining = (connsPerIp.get(ip) ?? 1) - 1;
+      if (remaining <= 0) connsPerIp.delete(ip);
+      else connsPerIp.set(ip, remaining);
+    });
 
     ws.on('message', (raw, isBinary) => {
       if (isBinary) return ws.close(1003, 'binary frames not supported');
@@ -173,6 +239,13 @@ function createRelay(options = {}) {
         case 'join': {
           if (typeof msg.roomId !== 'string' || !ROOM_ID_RE.test(msg.roomId)) {
             return send(ws, { type: 'error', error: 'invalid roomId' });
+          }
+          const members = rooms.get(msg.roomId);
+          if (members && members.size >= cfg.maxRoomMembers && !members.has(ws)) {
+            return send(ws, { type: 'error', error: 'room is full' });
+          }
+          if (!members && rooms.size >= cfg.maxRooms) {
+            return send(ws, { type: 'error', error: 'server is full' });
           }
           joinRoom(ws, msg.roomId);
           send(ws, { type: 'joined', roomId: msg.roomId });
@@ -201,6 +274,7 @@ function createRelay(options = {}) {
           }
           // Forward only the fields we expect — drop anything else.
           const fwd = { type: 'clip', data: { iv: data.iv, ct: data.ct }, ts: Date.now() };
+          if (Number.isInteger(msg.v) && msg.v >= 0 && msg.v <= 1_000) fwd.v = msg.v;
           if (typeof msg.mid === 'string' && msg.mid.length <= 80) fwd.mid = msg.mid;
           if (typeof msg.sid === 'string' && msg.sid.length <= 64) fwd.sid = msg.sid;
           if (data.fid !== undefined) {
@@ -230,13 +304,17 @@ function createRelay(options = {}) {
             }
             buffer.entries.push({ ts: fwd.ts, out });
             buffer.bytes += out.length;
+            replayBytesTotal += out.length;
             // Evict oldest packets when over the count or memory budget.
             while (
               buffer.entries.length > cfg.replayMax ||
               (buffer.bytes > cfg.replayMaxBytes && buffer.entries.length > 1)
             ) {
-              buffer.bytes -= buffer.entries.shift().out.length;
+              const dropped = buffer.entries.shift().out.length;
+              buffer.bytes -= dropped;
+              replayBytesTotal -= dropped;
             }
+            evictReplayGlobal();
           }
           break;
         }
@@ -304,4 +382,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createRelay };
+module.exports = { createRelay, PROTOCOL_VERSION };

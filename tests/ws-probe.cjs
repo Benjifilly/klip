@@ -13,7 +13,10 @@ ws.on('open', () => {
 });
 ws.on('message', (raw) => {
   console.log('message:', raw.toString());
-  ws.close();
+  // The relay greets with `hello` first; keep listening until the join settles.
+  let type = '';
+  try { type = JSON.parse(raw.toString()).type; } catch { /* not json */ }
+  if (type === 'joined' || type === 'error') ws.close();
 });
 ws.on('close', (code, reason) => {
   console.log('close:', code, reason.toString());

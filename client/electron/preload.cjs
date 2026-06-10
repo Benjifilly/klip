@@ -21,11 +21,20 @@ contextBridge.exposeInMainWorld('klip', {
   copyItem: (text) => ipcRenderer.invoke('klip:copy-item', text),
   copyEntry: (id) => ipcRenderer.invoke('klip:copy-entry', id),
   pasteEntry: (id) => ipcRenderer.invoke('klip:paste-entry', id),
-  sendFile: (filePath) => ipcRenderer.invoke('klip:send-file', filePath),
+  /**
+   * Send files dropped onto the window. The path extraction stays in the
+   * preload on purpose: the page can only hand us File objects from a real
+   * drop event — it has no API that takes an arbitrary filesystem path, so a
+   * compromised renderer can't use Klip as a file-exfiltration channel.
+   */
+  sendDroppedFiles: (files) =>
+    Promise.all(
+      [...files]
+        .filter((file) => file instanceof File)
+        .map((file) => ipcRenderer.invoke('klip:send-file', webUtils.getPathForFile(file))),
+    ),
   attachFile: () => ipcRenderer.invoke('klip:attach-file'),
   saveFile: (id) => ipcRenderer.invoke('klip:save-file', id),
-  // Sandboxed renderers can't see file paths; this is the blessed Electron way.
-  getPathForFile: (file) => webUtils.getPathForFile(file),
   togglePin: (id) => ipcRenderer.invoke('klip:toggle-pin', id),
   clearHistory: () => ipcRenderer.invoke('klip:clear-history'),
   deleteItem: (id) => ipcRenderer.invoke('klip:delete-item', id),
@@ -35,6 +44,11 @@ contextBridge.exposeInMainWorld('klip', {
   setDeviceName: (name) => ipcRenderer.invoke('klip:set-device-name', name),
   setClipboardClear: (seconds) => ipcRenderer.invoke('klip:set-clipboard-clear', seconds),
   setAutoStart: (enabled) => ipcRenderer.invoke('klip:set-auto-start', enabled),
+  setAutoCopy: (mode) => ipcRenderer.invoke('klip:set-auto-copy', mode),
+  setNotifyOnReceive: (enabled) => ipcRenderer.invoke('klip:set-notify-on-receive', enabled),
+  setSyncKinds: (kinds) => ipcRenderer.invoke('klip:set-sync-kinds', kinds),
+  setShortcuts: (shortcuts) => ipcRenderer.invoke('klip:set-shortcuts', shortcuts),
+  resolveRotation: (accept) => ipcRenderer.invoke('klip:resolve-rotation', accept),
   paletteHide: () => ipcRenderer.invoke('klip:palette-hide'),
   windowControl: (action) => ipcRenderer.invoke('klip:window-control', action),
   onState: (callback) => subscribe('klip:state', callback),

@@ -16,3 +16,11 @@ export function statusMeta(state: Pick<KlipState, 'status' | 'paused'>): StatusM
       return { dot: 'bg-zinc-600', label: 'Offline' };
   }
 }
+
+/** "CommandOrControl+Shift+K" → ["Ctrl", "Shift", "K"], for <kbd> rendering. */
+export function accelKeys(accelerator: string): string[] {
+  return accelerator
+    .replace(/CommandOrControl|CmdOrCtrl|Control/g, 'Ctrl')
+    .split('+')
+    .filter(Boolean);
+}
