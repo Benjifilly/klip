@@ -9,6 +9,12 @@
 
 Copy on your desktop, paste on your laptop. Klip watches your clipboard, encrypts everything locally with AES-256-GCM, and relays the ciphertext in real time over WebSockets to every device in your session. The relay server never sees your data — only opaque encrypted packets.
 
+<p align="center">
+  <img src="docs/dashboard.png" alt="Klip dashboard — session card with emoji fingerprint, search and synced history" width="390" />
+  &nbsp;&nbsp;
+  <img src="docs/quick-paste.png" alt="Quick-paste palette summoned anywhere with Ctrl+Shift+V" width="330" />
+</p>
+
 - ⚡ **Instant** — WebSocket push, no polling a cloud API
 - 🔒 **End-to-end encrypted** — AES-256-GCM, key derived on-device with Argon2id; local history is encrypted at rest too
 - 🖼️ **Text, links, images & files** — screenshots and files (≤ 20 MB) sync as transparently chunked, individually encrypted packets
