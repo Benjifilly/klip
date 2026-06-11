@@ -80,6 +80,9 @@ klip/
 │   │   └── crypto.cjs       #   E2EE module (isomorphic Web Crypto)
 │   ├── src/                 #   React UI (dark dashboard, history, pairing)
 │   └── assets/              #   app & tray icons
+├── mobile/                  # iOS app (Expo / React Native, runs in Expo Go)
+│   ├── src/lib/             #   crypto (interop-tested), relay client, store
+│   └── src/app/             #   screens: pairing, history, settings
 ├── docs/design.md           # design tokens & iOS notes
 └── tests/                   # unit (helpers, relay limits) + e2e (crypto, relay)
 ```
@@ -112,7 +115,14 @@ Vite serves the UI on `127.0.0.1:5173` and Electron opens once it's up — the U
 
 To verify E2EE empirically: watch the relay traffic (e.g. Wireshark on `:8787`) — you'll only ever see base64 `iv`/`ct` blobs.
 
-### 3. Shortcuts & tray
+### 3. iPhone (optional)
+
+The iOS companion runs in **Expo Go** — no Mac or Apple Developer account
+needed: `cd mobile && npx expo start --tunnel`, scan the QR with your iPhone,
+then scan the desktop session QR from inside the app.
+See [mobile/README.md](mobile/README.md).
+
+### 4. Shortcuts & tray
 
 | Shortcut       | Action                                          |
 | -------------- | ----------------------------------------------- |
@@ -198,7 +208,7 @@ the files `electron-builder` drops in `client/release/` (installer +
 
 **Features**
 
-- [ ] **Mobile** — the crypto module is isomorphic (Web Crypto + WASM Argon2id) and the protocol is plain JSON over WebSocket, so a companion PWA or React Native app only needs to reimplement the clipboard layer
+- [x] **Mobile (iOS)** — Expo app in [`mobile/`](mobile/README.md): QR pairing, text + image sync, encrypted history, runs in Expo Go. Share Extension & files land with the EAS build (paid Apple account)
 - [x] Images (chunked, same E2EE envelope) — arbitrary files are next
 - [x] Files (chunked, same E2EE envelope; 20 MB cap, sanitized names, saved only on explicit user action)
 - [x] Quick-paste palette — global `Ctrl+Shift+V` popup at the cursor, arrow keys + Enter
