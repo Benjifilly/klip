@@ -22,6 +22,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Lint & type-check mobile app
+        run: |
+          npm run lint --workspace mobile
+          npx tsc --noEmit --project mobile
+
       - name: Security audit (production dependencies)
         run: npm audit --omit=dev --audit-level=high
 

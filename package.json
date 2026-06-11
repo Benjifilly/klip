@@ -6,7 +6,8 @@
   "license": "MIT",
   "workspaces": [
     "server",
-    "client"
+    "client",
+    "mobile"
   ],
   "scripts": {
     "dev": "concurrently -k -s first \"npm run dev:server\" \"npm run dev:client\"",
@@ -15,7 +16,7 @@
     "build:client": "npm run build --workspace client",
     "dist:client": "npm run dist --workspace client",
     "lint": "eslint .",
-    "test": "node tests/unit.cjs && node tests/e2e.cjs"
+    "test": "node tests/unit.cjs && node tests/e2e.cjs && npm run test --workspace mobile"
   },
   "engines": {
     "node": ">=20"

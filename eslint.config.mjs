@@ -9,6 +9,8 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/dist/**',
       '**/release/**',
+      // The Expo app lints with its own config (`npx expo lint` in mobile/).
+      'mobile/**',
     ],
   },
 

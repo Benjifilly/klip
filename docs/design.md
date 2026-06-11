@@ -68,18 +68,26 @@ Short, factual, lowercase-calm. Hints explain *consequences*, not mechanics
 ("Pinned clips are kept", "share it like a password"). Security copy never
 overpromises: rotation "asks devices to follow — it does not evict them".
 
-## iOS notes (for the future mobile client)
+## iOS notes (V1 shipped in `mobile/`, June 2026)
 
-- iOS cannot watch the clipboard in the background. The iOS app is therefore
-  designed as: foreground app + **Share Extension** ("Send to Klip") +
-  optionally a custom keyboard to paste from history. Do not promise desktop
-  parity.
-- The crypto module is isomorphic (Web Crypto + WASM Argon2id) and the
-  protocol is JSON over WebSocket with a `v` field and a relay `hello` —
-  a new client only reimplements the clipboard layer.
-- **To measure before building:** Argon2id 64 MiB derivation time on a
-  low-end iPhone (hash-wasm under WKWebView/JavaScriptCore). Derivation only
-  happens at join, so a pairing spinner is acceptable, but it must be tested.
-- Deep links: desktop registers `klip://join?code=…&relay=…` (behind a
-  confirmation dialog). iOS should use Universal Links with the same query
-  shape and the same confirmation rule.
+- iOS cannot watch the clipboard in the background — the V1 app is a
+  foreground app (explicit "Send clipboard" button, live receive while open,
+  relay replay catch-up on return). The **Share Extension** ("Send to Klip")
+  and an optional custom keyboard wait for V2: they require an EAS dev build
+  and a paid Apple account; V1 runs entirely in Expo Go. No desktop parity is
+  promised, by design.
+- Hermes has no WebAssembly and no `crypto.subtle`, so `crypto.cjs` could not
+  run as-is: `mobile/src/lib/crypto.ts` re-implements the v2 scheme on
+  `@noble` primitives, with byte-compatibility enforced by an interop test
+  that runs both modules side by side (`mobile/test/crypto.interop.test.ts`).
+- Argon2id (64 MiB, t=3) runs in pure JS at pairing only, behind a native
+  spinner; the derived key is cached in the Keychain. The measured time is
+  shown in Settings — if it lands above ~10 s on a real device, the fallback
+  is hash-wasm inside an invisible WKWebView (which does have WebAssembly).
+- Tokens live in `mobile/src/lib/theme.ts` (plain StyleSheet — NativeWind was
+  skipped for boot-risk on new RN versions). Emojis remain reserved for the
+  session fingerprint.
+- Pairing scans the desktop QR (`klip://join?code=…&relay=…`) with the same
+  confirmation rule as the desktop deep link: never join silently, show the
+  code + fingerprint + relay first. Universal Links wait for V2 (associated
+  domains need a paid Apple account).
